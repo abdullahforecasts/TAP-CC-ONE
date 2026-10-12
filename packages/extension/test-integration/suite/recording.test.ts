@@ -235,13 +235,25 @@ suite('TAP-CC-ONE in VS Code', () => {
     assert.equal(viewer.status.state, 'ready', viewer.status.message);
     assert.ok((viewer.status.entries ?? 0) >= 3, `history entries: ${viewer.status.entries}`);
     assert.ok(viewer.status.verdict?.startsWith('INTACT'), viewer.status.verdict);
-    // Live refresh picks up new records.
+    // Live refresh picks up new records. The change is made without showing an editor: opening
+    // one in the same editor group would hide the viewer, and a hidden viewer does not refresh.
     const before = viewer.status.entries ?? 0;
-    const editor = await openEditor('main.c');
-    moveToEnd(editor);
-    await typeText(editor, '// seen by the viewer\n');
-    await editor.document.save();
+    assert.ok(viewer.panel.visible, 'viewer is visible');
+    const doc = await vscode.workspace.openTextDocument(path.join(root(), 'main.c'));
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(doc.uri, doc.positionAt(doc.getText().length), '// seen by the viewer\n');
+    assert.ok(await vscode.workspace.applyEdit(edit));
+    assert.ok(await doc.save());
     await until(() => (viewer.status.entries ?? 0) > before, 15_000);
+    // Hidden, it stops refreshing; shown again, it catches up straight away.
+    const hiddenBy = await openEditor('other.c');
+    assert.ok(!viewer.panel.visible, 'an editor in the same group hides the viewer');
+    moveToEnd(hiddenBy);
+    await typeText(hiddenBy, '// while the viewer was hidden\n');
+    await hiddenBy.document.save();
+    const whileHidden = viewer.status.entries ?? 0;
+    viewer.panel.reveal();
+    await until(() => (viewer.status.entries ?? 0) > whileHidden, 15_000);
     viewer.dispose();
   });
 

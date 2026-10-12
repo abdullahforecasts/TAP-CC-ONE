@@ -181,10 +181,13 @@ export class ViewerPanel implements vscode.Disposable {
 
   /** Live refresh: while the viewer is visible, send what was appended to the log. */
   private schedule(): void {
+    const wasRunning = this.timer !== undefined;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     if (!this.panel.visible) return;
     this.timer = setInterval(() => void this.refresh(), REFRESH_MS);
+    // Shown again after being hidden: catch up now rather than at the next tick.
+    if (!wasRunning) void this.refresh();
   }
 
   async refresh(): Promise<void> {
