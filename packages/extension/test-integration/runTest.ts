@@ -35,6 +35,7 @@ async function main(): Promise<void> {
       version: process.env.VSCODE_TEST_VERSION ?? 'stable',
       extensionDevelopmentPath,
       extensionTestsPath,
+      extensionTestsEnv: { TAP_DEBUG: '1' },
       launchArgs: [
         workspace,
         '--disable-extensions',

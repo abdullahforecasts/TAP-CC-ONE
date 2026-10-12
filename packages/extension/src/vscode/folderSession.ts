@@ -38,6 +38,11 @@ export interface SessionContext {
 const TICK_MS = 15_000;
 const VCS_WINDOW_MS = 5_000;
 
+/** Diagnostics on the console when TAP_DEBUG is set (the integration tests set it). */
+function debug(...args: unknown[]): void {
+  if (process.env.TAP_DEBUG) console.log('[tap]', ...args);
+}
+
 export class FolderSession implements vscode.Disposable {
   readonly folder: vscode.WorkspaceFolder;
   readonly root: string;
@@ -286,11 +291,17 @@ export class FolderSession implements vscode.Disposable {
           .filter((x): x is { rel: string; text: vscode.TextDocument } => x.rel !== undefined)
           .map((x) => ({ rel: x.rel, text: x.text.getText() })),
       readDisk: (rel): Promise<DiskRead> => readTrackedFile(this.absOf(rel), maxBytes),
+      statFile: (rel) =>
+        fs.promises.stat(this.absOf(rel)).then(
+          (s) => (s.isFile() ? { size: s.size, mtimeMs: s.mtimeMs } : undefined),
+          () => undefined,
+        ),
       listFiles: () => walkFiles(this.root, this.matcher),
       isTracked: (rel) => this.matcher(rel),
       vcsRecentlyActive: async () => this.vcsRecentlyActive(),
       randomBytes: (n) => new Uint8Array(randomBytes(n)),
       onError: (error, context) => {
+        debug(`${this.name}: ${context}:`, error);
         this.ctx.log.warn(
           `${this.name}: ${context}: ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -323,7 +334,15 @@ export class FolderSession implements vscode.Disposable {
             : e.reason === vscode.TextDocumentChangeReason.Redo
               ? 'redo'
               : undefined;
-        r()?.onDocumentChanged(rel, e.contentChanges, reason, e.document.isDirty, () => e.document.getText());
+        const doc = e.document;
+        r()?.onDocumentChanged(
+          rel,
+          e.contentChanges,
+          reason,
+          doc.isDirty,
+          () => doc.getText(),
+          () => doc.isDirty,
+        );
       }),
       vscode.workspace.onWillSaveTextDocument((e) => {
         const rel = this.relOf(e.document.uri);
@@ -395,6 +414,7 @@ export class FolderSession implements vscode.Disposable {
     const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.folder, '**/*'));
     const onDisk = (uri: vscode.Uri) => {
       const rel = this.relOf(uri);
+      debug('disk event', uri.fsPath, rel);
       if (rel && !rel.startsWith(`${TAP_DIR}/`)) r()?.onDiskEvent(rel);
     };
     d.push(watcher, watcher.onDidCreate(onDisk), watcher.onDidChange(onDisk), watcher.onDidDelete(onDisk));

@@ -322,6 +322,69 @@ describe('Recorder: files changing outside the editor', () => {
     await finish(sim);
     expect(records(sim.bytes).some((r) => r.k === Kind.EXTERNAL_CHANGE)).toBe(false);
   });
+
+  it('tells the first edit after opening or saving apart from a reload (isDirty reported late)', async () => {
+    const sim = await newSim({ 'a.c': 'int a;\n', 'b.c': 'int b;\n' });
+    sim.host.staleDirtyFlag = true;
+    sim.open('a.c');
+    sim.typeAtEnd('a.c', 'x');
+    sim.save('a.c');
+    sim.paste('a.c', sim.text('a.c').length, '// copied from elsewhere\n');
+    sim.save('a.c');
+    sim.change('a.c', [
+      { rangeOffset: 0, rangeLength: 0, text: 'Q' },
+      { rangeOffset: 4, rangeLength: 0, text: 'Q' },
+    ]);
+    sim.save('a.c');
+    sim.open('b.c');
+    sim.externalWrite('b.c', 'int b = 2;\n');
+    const report = await finish(sim, ['info:EXTERNAL_CHANGE']);
+    const ext = records(sim.bytes).filter((r) => r.k === Kind.EXTERNAL_CHANGE);
+    expect(ext).toHaveLength(1);
+    expect(report.composition!.byOrigin.typed?.chars).toBe(3);
+    expect(report.composition!.byOrigin.paste?.chars).toBe(25);
+    expect(flagsOf(sim.bytes).some((f) => f & Flag.MULTI_CURSOR)).toBe(true);
+  });
+
+  it('records a reload even when the file changed again before it was checked', async () => {
+    const sim = await newSim({ 'a.c': 'one\n' });
+    sim.open('a.c');
+    sim.externalWrite('a.c', 'two\n');
+    sim.host.disk.set('a.c', 'three\n');
+    await sim.settle();
+    sim.host.disk.set('a.c', 'two\n');
+    await finish(sim, ['info:EXTERNAL_CHANGE']);
+    expect(records(sim.bytes).filter((r) => r.k === Kind.EXTERNAL_CHANGE)).toHaveLength(1);
+    expect(loggedText(sim.bytes, 'a.c')).toBe('two\n');
+  });
+
+  it('finds changes the file-system watcher missed', async () => {
+    const sim = await newSim({ 'a.c': 'a\n', 'gone.c': 'g\n' });
+    sim.host.disk.set('a.c', 'a changed\n');
+    sim.host.disk.set('new.c', 'n\n');
+    sim.host.disk.delete('gone.c');
+    await sim.settle(); // a flush (before every verification) sweeps the disk
+    expect(loggedText(sim.bytes, 'a.c')).toBe('a changed\n');
+    expect(loggedText(sim.bytes, 'new.c')).toBe('n\n');
+    expect(loggedText(sim.bytes, 'gone.c')).toBeUndefined();
+    sim.host.disk.set('a.c', 'swept by the timer\n');
+    sim.host.advance(60_000);
+    await sim.recorder.tick();
+    await sim.recorder.idle();
+    expect(loggedText(sim.bytes, 'a.c')).toBe('swept by the timer\n');
+    await finish(sim, ['info:EXTERNAL_CHANGE', 'info:EXTERNAL_FILE', 'info:FILE_DELETED']);
+  });
+
+  it('records unsaved edits discarded by closing a document as an undo', async () => {
+    const sim = await newSim({ 'a.c': 'saved\n' });
+    sim.open('a.c');
+    sim.typeAtEnd('a.c', 'unsaved');
+    await sim.settle();
+    sim.close('a.c');
+    const report = await finish(sim);
+    expect(flagsOf(sim.bytes).at(-1)).toBe(Flag.UNDO);
+    expect(report.composition!.byOrigin.typed).toBeUndefined();
+  });
 });
 
 describe('Recorder: file operations through the editor', () => {
@@ -664,46 +727,54 @@ describe('Recorder: robustness', () => {
     expect(sim.host.errors.map((e) => e.context)).toEqual(['job']);
   });
 
-  it('a random editing session always produces a log that verifies and matches', async () => {
-    let seed = 12345;
-    const rand = () => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed / 0x7fffffff;
-    };
-    const sim = await newSim({ 'a.c': 'int main() {}\n', 'b.c': '' });
-    sim.open('a.c');
-    sim.open('b.c');
-    const pieces = ['x', 'for (', ';\n', '😀', 'é', '\r\n', '  ', 'return 0;'];
-    for (let step = 0; step < 400; step++) {
-      const rel = rand() < 0.6 ? 'a.c' : 'b.c';
-      const text = sim.text(rel);
-      const r = rand();
-      if (r < 0.55) {
-        sim.insert(rel, Math.floor(rand() * (text.length + 1)), pieces[Math.floor(rand() * pieces.length)]!);
-      } else if (r < 0.7 && text.length > 0) {
-        const at = Math.floor(rand() * text.length);
-        sim.change(rel, [{ rangeOffset: at, rangeLength: Math.min(3, text.length - at), text: '' }]);
-      } else if (r < 0.78) {
-        sim.paste(rel, Math.floor(rand() * (text.length + 1)), 'pasted();\n');
-      } else if (r < 0.85) {
-        sim.save(rel);
-      } else if (r < 0.88) {
-        sim.close(rel);
-        sim.externalWrite(rel, `${sim.host.disk.get(rel) ?? ''}// external\n`);
-        await sim.settle();
-        sim.open(rel);
-      } else if (r < 0.9) {
-        sim.revert(rel);
-      } else if (r < 0.92) {
-        await sim.recorder.tick();
-      } else if (r < 0.95) {
-        await sim.settle();
+  it.each([false, true])(
+    'a random editing session always produces a log that verifies and matches (late isDirty: %s)',
+    async (stale) => {
+      let seed = 12345;
+      const rand = () => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed / 0x7fffffff;
+      };
+      const sim = await newSim({ 'a.c': 'int main() {}\n', 'b.c': '' });
+      sim.host.staleDirtyFlag = stale;
+      sim.open('a.c');
+      sim.open('b.c');
+      const pieces = ['x', 'for (', ';\n', '😀', 'é', '\r\n', '  ', 'return 0;'];
+      for (let step = 0; step < 400; step++) {
+        const rel = rand() < 0.6 ? 'a.c' : 'b.c';
+        const text = sim.text(rel);
+        const r = rand();
+        if (r < 0.55) {
+          sim.insert(
+            rel,
+            Math.floor(rand() * (text.length + 1)),
+            pieces[Math.floor(rand() * pieces.length)]!,
+          );
+        } else if (r < 0.7 && text.length > 0) {
+          const at = Math.floor(rand() * text.length);
+          sim.change(rel, [{ rangeOffset: at, rangeLength: Math.min(3, text.length - at), text: '' }]);
+        } else if (r < 0.78) {
+          sim.paste(rel, Math.floor(rand() * (text.length + 1)), 'pasted();\n');
+        } else if (r < 0.85) {
+          sim.save(rel);
+        } else if (r < 0.88) {
+          sim.close(rel);
+          sim.externalWrite(rel, `${sim.host.disk.get(rel) ?? ''}// external\n`);
+          await sim.settle();
+          sim.open(rel);
+        } else if (r < 0.9) {
+          sim.revert(rel);
+        } else if (r < 0.92) {
+          await sim.recorder.tick();
+        } else if (r < 0.95) {
+          await sim.settle();
+        }
       }
-    }
-    sim.save('a.c');
-    sim.save('b.c');
-    const report = await finish(sim, ['info:EXTERNAL_CHANGE']);
-    expect(report.findings.find((f) => f.code === 'SUBMISSION_MATCH')).toBeDefined();
-    expect(verifyLog(sim.bytes).verdict).toBe('INTACT_WITH_WARNINGS');
-  });
+      sim.save('a.c');
+      sim.save('b.c');
+      const report = await finish(sim, ['info:EXTERNAL_CHANGE']);
+      expect(report.findings.find((f) => f.code === 'SUBMISSION_MATCH')).toBeDefined();
+      expect(verifyLog(sim.bytes).verdict).toBe('INTACT_WITH_WARNINGS');
+    },
+  );
 });

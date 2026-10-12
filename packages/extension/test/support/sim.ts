@@ -65,6 +65,11 @@ export class SimHost implements RecorderHost {
   docs = new Map<string, Doc>();
   clipboard = '';
   clipboardDelayMs = 0;
+  /**
+   * Mimic VS Code reporting isDirty=false with the first edit after opening or saving (the
+   * dirty flag is updated just after the change event).
+   */
+  staleDirtyFlag = false;
   wall = Date.UTC(2026, 9, 13, 9);
   mono = 1000;
   vcs = false;
@@ -99,6 +104,14 @@ export class SimHost implements RecorderHost {
     const text = this.disk.get(rel);
     return text === undefined ? { kind: 'missing' } : { kind: 'text', text };
   }
+  async statFile(rel: string): Promise<{ size: number; mtimeMs: number } | undefined> {
+    const text = this.disk.get(rel) ?? (this.binary.has(rel) ? '' : undefined);
+    if (text === undefined) return undefined;
+    // A content fingerprint stands in for the modification time.
+    let h = 0;
+    for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0;
+    return { size: text.length, mtimeMs: h };
+  }
   async listFiles(): Promise<string[]> {
     return [...this.disk.keys(), ...this.binary].filter((p) => this.tracked(p)).sort();
   }
@@ -120,6 +133,7 @@ export const FAST: Partial<RecorderSettings> = {
   flushDelayMs: 5,
   clipboardWaitMs: 30,
   diskDebounceMs: 5,
+  reloadWaitMs: 20,
 };
 
 export interface SimOptions {
@@ -239,8 +253,17 @@ export class Sim {
     }
     out += d.text.slice(pos);
     d.text = out;
+    const wasDirty = d.dirty;
     d.dirty = opts.dirty ?? true;
-    this.recorder.onDocumentChanged(rel, changes, reason, d.dirty, () => d.text);
+    const reported = this.host.staleDirtyFlag && d.dirty && !wasDirty ? false : d.dirty;
+    this.recorder.onDocumentChanged(
+      rel,
+      changes,
+      reason,
+      reported,
+      () => d.text,
+      () => d.dirty,
+    );
   }
 
   type(rel: string, offset: number, text: string, msPerChar = 120): void {

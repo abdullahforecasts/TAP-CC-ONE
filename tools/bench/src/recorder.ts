@@ -34,6 +34,7 @@ export async function benchRecorder(): Promise<{ ok: boolean; lines: Array<[stri
     openText: (rel) => docs.get(rel),
     openDocuments: () => [...docs].map(([rel, text]) => ({ rel, text })),
     readDisk: async (rel): Promise<DiskRead> => ({ kind: 'text', text: docs.get(rel) ?? '' }),
+    statFile: async (rel) => (docs.has(rel) ? { size: docs.get(rel)!.length, mtimeMs: 0 } : undefined),
     listFiles: async () => [...docs.keys()],
     isTracked: () => true,
     vcsRecentlyActive: async () => false,

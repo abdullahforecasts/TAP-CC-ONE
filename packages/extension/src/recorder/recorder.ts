@@ -27,6 +27,7 @@ import {
   type KindName,
   LARGE_INSERT_THRESHOLD,
   type LogWriter,
+  normalizeText,
   type RecoveryBody,
   type SnapshotOrigin,
   toWellFormed,
@@ -57,6 +58,8 @@ export interface RecorderHost {
   openDocuments(): Array<{ rel: string; text: string }>;
   /** Reads a file from disk (applies size and binary limits). */
   readDisk(rel: string): Promise<DiskRead>;
+  /** Size and modification time of a file on disk, or undefined if it does not exist. */
+  statFile(rel: string): Promise<{ size: number; mtimeMs: number } | undefined>;
   /** All tracked files currently on disk (workspace-relative, '/' separators). */
   listFiles(): Promise<string[]>;
   /** Whether a path matches the folder's include/exclude rules. */
@@ -95,6 +98,16 @@ export interface RecorderSettings extends ClassifySettings {
   clipboardWaitMs: number;
   /** Debounce for file-system watcher events. */
   diskDebounceMs: number;
+  /**
+   * How long to wait for the editor's dirty flag when a change arrives on a clean document and
+   * the result does not match the file on disk (see `checkReload`).
+   */
+  reloadWaitMs: number;
+  /**
+   * How often closed files are compared with the disk (size and modification time), in case the
+   * file-system watcher missed an event. Also done before every verification.
+   */
+  diskSweepIntervalMs: number;
 }
 
 export const DEFAULT_SETTINGS: RecorderSettings = {
@@ -106,6 +119,8 @@ export const DEFAULT_SETTINGS: RecorderSettings = {
   maxBufferedBytes: 64 * 1024,
   clipboardWaitMs: 250,
   diskDebounceMs: 300,
+  reloadWaitMs: 150,
+  diskSweepIntervalMs: 60_000,
 };
 
 export interface RecorderOptions {
@@ -134,6 +149,20 @@ interface Time {
 
 type ClipState = { verdict: 'pending' | 'paste' | 'no-paste'; promise?: Promise<void> };
 
+/**
+ * A change event on a document without unsaved edits, not caused by undo/redo or a save. It is
+ * either the editor reloading the file from disk, or the first edit after opening or saving
+ * (VS Code reports isDirty=false for that event and sets the flag a moment later).
+ */
+interface ReloadCheck {
+  verdict: 'pending' | 'edit' | 'reload';
+  promise?: Promise<void>;
+  /** Document text right after the event. */
+  text: string;
+  hint?: 'vcs';
+  isDirtyNow: () => boolean;
+}
+
 interface PendingChange {
   id: number;
   f: number;
@@ -144,8 +173,12 @@ interface PendingChange {
   flags: number;
   multi: boolean;
   clip?: ClipState;
+  /** Shared by all changes of one event that may be a reload from disk. */
+  reload?: ReloadCheck;
   time: Time;
 }
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface RecorderStats {
   records: number;
@@ -183,6 +216,9 @@ export class Recorder {
   private readonly lastChangeMono = new Map<number, number>();
   private readonly savingUntil = new Map<string, number>();
   private readonly diskTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Last seen size:mtime of closed files, for the periodic disk sweep. */
+  private readonly diskStats = new Map<string, string>();
+  private lastSweepMono = 0;
 
   private nextRid = 1;
   private recordsSinceCheckpoint = 0;
@@ -235,6 +271,7 @@ export class Recorder {
     if (this.stateValue !== 'idle') throw new Error(`cannot start from state ${this.stateValue}`);
     this.sessionStartMono = this.host.monoNow();
     this.lastCheckpointMono = this.sessionStartMono;
+    this.lastSweepMono = this.sessionStartMono;
     this.sid = this.host.randomBytes(16);
     const time = this.now();
     const isNewLog = this.writer.seq === 0;
@@ -370,6 +407,11 @@ export class Recorder {
         });
       }
     }
+    if (mono - this.lastSweepMono >= this.settings.diskSweepIntervalMs) {
+      this.lastSweepMono = mono;
+      const time = this.now();
+      this.enqueue(() => this.sweepDisk(time));
+    }
     const due = mono - this.lastCheckpointMono >= this.settings.checkpointIntervalMs;
     if (due && (this.recordsSinceCheckpoint > 0 || this.pending.length > 0)) {
       const upTo = this.seal();
@@ -393,8 +435,10 @@ export class Recorder {
 
   /**
    * A tracked document changed.
-   * @param isDirtyAfter document.isDirty after the change (false for reloads from disk).
+   * @param isDirtyAfter document.isDirty as reported with the change (false for reloads from
+   *   disk, but also for the first edit after opening or saving: see `ReloadCheck`).
    * @param textAfter returns the document text after the change (only called when needed).
+   * @param isDirtyNow returns document.isDirty when called (defaults to `isDirtyAfter`).
    */
   onDocumentChanged(
     rel: string,
@@ -402,6 +446,7 @@ export class Recorder {
     reason: EditReason,
     isDirtyAfter: boolean,
     textAfter: () => string,
+    isDirtyNow: () => boolean = () => isDirtyAfter,
   ): void {
     if (this.stateValue !== 'recording' || changes.length === 0) return;
     const f = this.registry.get(rel);
@@ -412,18 +457,12 @@ export class Recorder {
     }
     const mono = this.host.monoNow();
     const saving = (this.savingUntil.get(rel) ?? 0) > mono;
-    if (reason === undefined && !isDirtyAfter && !saving) {
-      // The editor replaced the buffer with the file on disk: "Revert File" or an external
-      // change to a file that had no unsaved edits.
-      const text = textAfter();
-      const upTo = this.seal();
-      const time = this.now();
-      this.enqueue(async () => {
-        await this.appendEdits(upTo);
-        await this.applyDiskVersion(f, rel, text, time);
-      });
-      return;
-    }
+    // Possibly the editor replacing the buffer with the file on disk ("Revert File", or a file
+    // without unsaved edits changed on disk). Buffered like an edit; decided before it is written.
+    const reload =
+      reason === undefined && !isDirtyAfter && !saving
+        ? this.checkReload(rel, textAfter(), isDirtyNow)
+        : undefined;
 
     let classified: ReturnType<typeof classifyEvent>;
     try {
@@ -453,6 +492,7 @@ export class Recorder {
         time,
       };
       if (c.needsClipboard) change.clip = this.checkClipboard(c.ins, multi);
+      if (reload) change.reload = reload;
       this.pending.push(change);
       this.pendingBytes += c.ins.length + 16;
     });
@@ -473,6 +513,10 @@ export class Recorder {
   onWillSave(rel: string): void {
     if (this.stateValue !== 'recording') return;
     this.savingUntil.set(rel, this.host.monoNow() + 3000);
+    // The document is being saved, so it had unsaved edits: changes still awaiting a reload
+    // check were edits.
+    const f = this.registry.get(rel);
+    for (const c of this.pending) if (c.f === f && c.reload?.verdict === 'pending') c.reload.verdict = 'edit';
   }
 
   /** A tracked document was saved; `text` is its content at save time. */
@@ -511,7 +555,7 @@ export class Recorder {
     const time = this.now();
     this.enqueue(async () => {
       await this.appendEdits(upTo);
-      await this.applyDiskVersion(f, rel, text, time, true);
+      this.applyDiskVersion(f, rel, text, time, { fromOpen: true });
     });
   }
 
@@ -644,11 +688,26 @@ export class Recorder {
     });
   }
 
-  /** Writes everything buffered to disk now (used before verifying or exporting). */
+  /**
+   * Writes everything buffered to disk now and brings closed files up to date (used before
+   * verifying or exporting): debounced watcher events are handled immediately and the disk is
+   * swept for changes the watcher missed.
+   */
   flush(): Promise<void> {
     if (this.stateValue === 'idle' || this.closed) return this.queue;
     const upTo = this.seal();
-    return this.enqueue(() => this.appendEdits(upTo));
+    const time = this.now();
+    const recording = this.stateValue === 'recording';
+    const due = [...this.diskTimers.keys()];
+    for (const timer of this.diskTimers.values()) clearTimeout(timer);
+    this.diskTimers.clear();
+    if (recording) this.lastSweepMono = this.host.monoNow();
+    return this.enqueue(async () => {
+      await this.appendEdits(upTo);
+      if (!recording) return;
+      for (const rel of due) await this.checkDisk(rel, time);
+      await this.sweepDisk(time);
+    });
   }
 
   // -------------------------------------------------------------------------------------------
@@ -756,21 +815,69 @@ export class Recorder {
     return state;
   }
 
-  /** Appends buffered changes with id <= upTo, waiting briefly for clipboard checks. */
+  /**
+   * Decides whether a change on a clean document was a reload from disk. A document that stays
+   * clean was reloaded. One that becomes dirty was edited, unless its text right after the event
+   * equals the file on disk (a reload immediately followed by typing). A save of the document
+   * while the check runs settles it as an edit (`onWillSave`): clean documents are not saved.
+   */
+  private checkReload(rel: string, text: string, isDirtyNow: () => boolean): ReloadCheck {
+    const check: ReloadCheck = { verdict: 'pending', text, isDirtyNow };
+    check.promise = (async () => {
+      let dirty = isDirtyNow();
+      for (let waited = 0; !dirty && waited < this.settings.reloadWaitMs; waited += 10) {
+        await delay(10);
+        dirty = isDirtyNow();
+      }
+      let onDisk = false;
+      if (dirty && check.verdict === 'pending') {
+        try {
+          const read = await this.host.readDisk(rel);
+          onDisk = read.kind === 'text' && normalizeText(read.text) === normalizeText(text);
+        } catch {
+          // unreadable: decided by the dirty flag
+        }
+      }
+      const reloaded = !dirty || onDisk;
+      if (check.verdict !== 'pending') return;
+      if (reloaded && (await this.host.vcsRecentlyActive().catch(() => false))) check.hint = 'vcs';
+      if (check.verdict === 'pending') check.verdict = reloaded ? 'reload' : 'edit';
+    })();
+    return check;
+  }
+
+  /** Final verdict of a reload check; one still running is decided by the dirty flag now. */
+  private isReload(c: PendingChange): boolean {
+    const r = c.reload;
+    if (!r) return false;
+    if (r.verdict === 'pending') r.verdict = r.isDirtyNow() ? 'edit' : 'reload';
+    return r.verdict === 'reload';
+  }
+
+  /** Waits for `promises`, at most `ms`. */
+  private async waitFor(promises: Array<Promise<void>>, ms: number): Promise<void> {
+    if (promises.length === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.all(promises),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+
+  /** Appends buffered changes with id <= upTo, waiting briefly for clipboard and reload checks. */
   private async appendEdits(upTo: number): Promise<void> {
-    const waiting = this.pending
-      .filter((c) => c.id <= upTo && c.clip?.verdict === 'pending')
-      .map((c) => c.clip!.promise!);
-    if (waiting.length > 0) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([
-        Promise.all(waiting),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, this.settings.clipboardWaitMs);
-        }),
-      ]);
-      if (timer) clearTimeout(timer);
-    }
+    const sealed = this.pending.filter((c) => c.id <= upTo);
+    await this.waitFor(
+      sealed.filter((c) => c.clip?.verdict === 'pending').map((c) => c.clip!.promise!),
+      this.settings.clipboardWaitMs,
+    );
+    await this.waitFor(
+      [...new Set(sealed.filter((c) => c.reload?.verdict === 'pending').map((c) => c.reload!.promise!))],
+      this.settings.reloadWaitMs + 1000,
+    );
     if (this.closed) return;
     this.appendEditsNow(upTo);
   }
@@ -784,9 +891,21 @@ export class Recorder {
     const resynced = new Set<number>();
     let i = 0;
     while (i < taken.length) {
-      const f = taken[i]!.f;
+      const first = taken[i]!;
+      const f = first.f;
+      if (this.isReload(first)) {
+        // The editor reloaded the file from disk: record the new version, not typing.
+        const reload = first.reload!;
+        while (i < taken.length && taken[i]!.reload === reload) i++;
+        if (resynced.has(f)) continue;
+        const path = this.writer.state.files.get(f)?.path;
+        if (path !== undefined) {
+          this.applyDiskVersion(f, path, reload.text, first.time, reload.hint ? { hint: reload.hint } : {});
+        }
+        continue;
+      }
       const group: PendingChange[] = [];
-      while (i < taken.length && taken[i]!.f === f) group.push(taken[i++]!);
+      while (i < taken.length && taken[i]!.f === f && !this.isReload(taken[i]!)) group.push(taken[i++]!);
       if (resynced.has(f)) continue; // already contained in the resync snapshot
       const tuples = group.map((c): ChangeTuple => {
         let flags = c.flags;
@@ -874,13 +993,13 @@ export class Recorder {
    * user discarded unsaved edits (Revert File / reopened without saving): record that as an undo.
    * Otherwise the file changed on disk: EXTERNAL_CHANGE plus an external snapshot.
    */
-  private async applyDiskVersion(
+  private applyDiskVersion(
     f: number,
     rel: string,
     text: string,
     time: Time,
-    fromOpen = false,
-  ): Promise<void> {
+    opts: { fromOpen?: boolean; hint?: 'vcs' } = {},
+  ): void {
     const current = this.writer.state.files.get(f);
     if (!current || sameText(current.text, text)) return;
     const h = contentHash(text);
@@ -889,13 +1008,13 @@ export class Recorder {
       this.append('EDIT_BATCH', { f, c: [undoTuple(current.text, text)] }, time);
       return;
     }
-    if (fromOpen) {
+    if (opts.fromOpen) {
       // Opened with content that is neither our state nor the last saved version.
       this.snapshot(f, rel, text, 'resync', time);
       return;
     }
     const body: BodyByKind['EXTERNAL_CHANGE'] = { f, h };
-    if (await this.host.vcsRecentlyActive()) body.hint = 'vcs';
+    if (opts.hint) body.hint = opts.hint;
     this.append('EXTERNAL_CHANGE', body, time);
     this.snapshot(f, rel, text, 'external', time);
     this.diskHash.set(f, h);
@@ -920,16 +1039,32 @@ export class Recorder {
     }
     const current = this.writer.state.files.get(f);
     if (!current) return;
-    const h = contentHash(read.text);
     if (sameText(current.text, read.text)) {
-      this.diskHash.set(f, h);
+      this.diskHash.set(f, contentHash(read.text));
       return;
     }
-    const body: BodyByKind['EXTERNAL_CHANGE'] = { f, h };
-    if (await this.host.vcsRecentlyActive()) body.hint = 'vcs';
-    this.append('EXTERNAL_CHANGE', body, time);
-    this.snapshot(f, rel, read.text, 'external', time);
-    this.diskHash.set(f, h);
+    // Either another program changed it, or the editor closed it with unsaved edits discarded.
+    const hint = (await this.host.vcsRecentlyActive()) ? 'vcs' : undefined;
+    this.applyDiskVersion(f, rel, read.text, time, hint ? { hint } : {});
+  }
+
+  /**
+   * Compares closed tracked files with the disk by size and modification time and checks the
+   * ones that changed, so a change the file-system watcher missed is still recorded.
+   */
+  private async sweepDisk(time: Time): Promise<void> {
+    const paths = new Set<string>(this.registry.keys());
+    for (const p of await this.host.listFiles()) if (this.host.isTracked(p)) paths.add(p);
+    for (const rel of [...paths].sort()) {
+      if (this.closed || this.stateValue !== 'recording') return;
+      if (this.host.openText(rel) !== undefined) continue;
+      const stat = await this.host.statFile(rel);
+      const key = stat ? `${stat.size}:${stat.mtimeMs}` : '-';
+      if (this.diskStats.get(rel) === key) continue;
+      this.diskStats.set(rel, key);
+      await this.checkDisk(rel, time);
+    }
+    for (const rel of [...this.diskStats.keys()]) if (!paths.has(rel)) this.diskStats.delete(rel);
   }
 
   private deleteFileNow(rel: string, f: number, time: Time): void {

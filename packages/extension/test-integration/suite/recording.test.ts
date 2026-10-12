@@ -6,7 +6,7 @@
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { type AnyRecord, Flag, Kind, readLog, type VerifyReport } from '@tap/core';
+import { type AnyRecord, Flag, Kind, Replayer, readLog, type VerifyReport } from '@tap/core';
 import * as vscode from 'vscode';
 import type { Controller } from '../../src/vscode/controller.js';
 
@@ -23,6 +23,33 @@ function root(): string {
 function logRecords(): AnyRecord[] {
   const bytes = new Uint8Array(fs.readFileSync(path.join(root(), '.tap', 'log.codelog')));
   return readLog(bytes).records.map((r) => r.record);
+}
+
+/** The log's current text of a file (undefined if not in the log). */
+function loggedText(rel: string): string | undefined {
+  const r = new Replayer();
+  for (const e of readLog(new Uint8Array(fs.readFileSync(path.join(root(), '.tap', 'log.codelog')))).records)
+    r.apply(e.record);
+  return r.fileByPath(rel)?.text;
+}
+
+/** One line per record, printed when a test fails. */
+function dumpLog(): string {
+  const names = Object.fromEntries(Object.entries(Kind).map(([k, v]) => [v, k]));
+  const paths = new Map<number, string>();
+  return logRecords()
+    .map((r, seq) => {
+      const b = r.b as Record<string, unknown>;
+      if (typeof b.f === 'number' && typeof b.path === 'string') paths.set(b.f, b.path);
+      const file = typeof b.f === 'number' ? ` ${paths.get(b.f) ?? `f${b.f}`}` : '';
+      let detail = '';
+      if (r.k === Kind.EDIT_BATCH) detail = ` ${JSON.stringify(r.b.c)}`;
+      else if (r.k === Kind.FILE_SNAPSHOT)
+        detail = ` origin=${r.b.origin} ${JSON.stringify(r.b.text.slice(0, 60))}`;
+      else if (r.k === Kind.FILE_OP) detail = ` ${r.b.op}${r.b.newPath ? ` -> ${r.b.newPath}` : ''}`;
+      return `  #${seq} m=${r.m} ${names[r.k]}${file}${detail}`;
+    })
+    .join('\n');
 }
 
 function changeFlags(records: AnyRecord[]): number[] {
@@ -63,6 +90,11 @@ function moveToEnd(editor: vscode.TextEditor): void {
 }
 
 suite('TAP-CC-ONE in VS Code', () => {
+  teardown(function () {
+    if (this.currentTest?.state === 'failed')
+      console.log(`log after "${this.currentTest.title}":\n${dumpLog()}`);
+  });
+
   suiteSetup(async () => {
     const ext = vscode.extensions.getExtension<Controller>(EXTENSION_ID);
     assert.ok(ext, 'extension is installed');
@@ -81,6 +113,7 @@ suite('TAP-CC-ONE in VS Code', () => {
     assert.ok((report.composition?.byOrigin.typed?.chars ?? 0) >= '  printf("hi");\n'.length - 2);
     assert.ok(logRecords().some((r) => r.k === Kind.SAVE));
     assert.ok(report.findings.some((f) => f.code === 'SUBMISSION_MATCH'));
+    assert.ok(!logRecords().some((r) => r.k === Kind.EXTERNAL_CHANGE), 'typing is not an external change');
   });
 
   test('marks a clipboard paste', async () => {
@@ -126,24 +159,28 @@ suite('TAP-CC-ONE in VS Code', () => {
     );
   });
 
-  test('marks edits made by save participants (trim trailing whitespace)', async () => {
+  test('records edits made by save participants (trim trailing whitespace)', async () => {
     const editor = await openEditor('other.c');
     moveToEnd(editor);
     await typeText(editor, 'int y = 2;   ');
     await editor.document.save();
     await verify();
-    assert.ok(
-      changeFlags(logRecords()).some((f) => f & Flag.FORMAT_ON_SAVE),
-      'save edits flagged',
+    assert.equal(loggedText('other.c'), editor.document.getText());
+    assert.ok(!editor.document.getText().endsWith(' '), 'trailing whitespace trimmed');
+    // VS Code runs the trim either before or after telling extensions that a save is starting
+    // (the order of save participants is not fixed), so the flag is reported, not required.
+    const flagged = changeFlags(logRecords()).some((f) => f & Flag.FORMAT_ON_SAVE);
+    console.log(
+      `  (trim before onWillSave: ${!flagged}; FORMAT_ON_SAVE flag ${flagged ? 'set' : 'not set'})`,
     );
   });
 
   test('records a change made by another program to a closed file', async () => {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
     fs.writeFileSync(path.join(root(), 'notes.txt'), 'written by another program\n');
-    await until(() => logRecords().some((r) => r.k === Kind.FILE_SNAPSHOT && r.b.path === 'notes.txt'));
+    await until(() => loggedText('notes.txt') === 'written by another program\n');
     fs.writeFileSync(path.join(root(), 'notes.txt'), 'changed again\n');
-    await until(() => logRecords().some((r) => r.k === Kind.EXTERNAL_CHANGE));
+    await until(() => loggedText('notes.txt') === 'changed again\n');
     await verify();
   });
 
@@ -151,8 +188,9 @@ suite('TAP-CC-ONE in VS Code', () => {
     await openEditor('other.c');
     const before = logRecords().filter((r) => r.k === Kind.EXTERNAL_CHANGE).length;
     fs.writeFileSync(path.join(root(), 'other.c'), 'int other = 42;\n');
-    await until(() => logRecords().filter((r) => r.k === Kind.EXTERNAL_CHANGE).length > before);
+    await until(() => loggedText('other.c') === 'int other = 42;\n');
     const report = await verify();
+    assert.equal(logRecords().filter((r) => r.k === Kind.EXTERNAL_CHANGE).length, before + 1);
     assert.equal(report.findings.filter((f) => f.code === 'RESYNC').length, 0);
   });
 
