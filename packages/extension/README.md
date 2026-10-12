@@ -4,7 +4,7 @@ Records a tamper-evident history of how your code was written, so you can show t
 
 **Author:** Abdullah Nawaz · **License:** MIT · **Source:** [github.com/abdullahforecasts/TAP-CC-ONE](https://github.com/abdullahforecasts/TAP-CC-ONE)
 
-> Status: 0.1.0, development build (Part 2 of the plan). Timestamps from third-party services, the log viewer and the teacher's verifier arrive in the next releases.
+> Status: 0.2.0, development build (Part 3 of the plan). Timestamps from third-party services and the teacher's verifier arrive in the next releases.
 
 ## How it works
 
@@ -13,7 +13,17 @@ Records a tamper-evident history of how your code was written, so you can show t
 3. Everything is written to `.tap/log.codelog` in your folder: what you typed, pasted, undid, saved and ran, with timing. The file is binary and every record is linked to the previous one by a hash chain, and signed checkpoints are written every few minutes, so any later edit to the file is detectable.
 4. Submit `.tap/log.codelog` together with your code.
 
-Click `TAP` in the status bar for pause, resume, notes, verification and your key fingerprint.
+Click `TAP` in the status bar for the log viewer, pause, resume, notes, verification and your key fingerprint.
+
+## Viewing your log
+
+**TAP: View Log** opens your log inside VS Code, read-only:
+
+- **Save History** — every save of every file, newest first, like local version control: what changed (line diff), whether you ran the code and the result, how long you worked since the previous save, and how the new code arrived (typed, pasted, copied from another file of yours, inserted by a tool). **Replay** plays back exactly that stretch of work.
+- **Replay** — any file's whole history with a scrubber, 1× to 64× speed and "skip idle time". Pasted and inserted text is highlighted.
+- **Timeline**, **Composition** (how the final code arrived, per file), **Events** (pastes, runs, notes, outside changes…) and **About this log** (log ID, key fingerprint, editor versions, AI-assist extensions, settings that weaken the evidence).
+
+The checklist at the top shows whether the log is intact and whether it matches the files in your folder. The viewer updates while you work.
 
 ## What is recorded
 
@@ -34,11 +44,12 @@ Click `TAP` in the status bar for pause, resume, notes, verification and your ke
 
 | Command | What it does |
 |---|---|
+| TAP: View Log (Save History & Replay) | Opens the log viewer |
 | TAP: Start Recording This Folder | Creates `.tap/` and starts (or continues) the log |
 | TAP: Stop Recording This Folder | Ends the session; the log stays in `.tap/` |
 | TAP: Pause Recording / Resume Recording | Pauses are recorded; changes made while paused are marked on resume |
 | TAP: Add Note to Log | Adds context, e.g. "starter code copied from the course page" |
-| TAP: Verify Log Integrity | Checks the log and compares it with your files on disk |
+| TAP: Verify Log Integrity | Checks the log and compares it with the files in your folder (including unsaved changes) |
 | TAP: Show Key Fingerprint | Shows the fingerprint of this computer's signing key |
 
 ## Settings

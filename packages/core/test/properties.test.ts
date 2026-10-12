@@ -5,6 +5,7 @@ import {
   concatBytes,
   contentHash,
   decodeCanonical,
+  type EditEvent,
   encodeCanonical,
   encodeFrame,
   Flag,
@@ -12,6 +13,7 @@ import {
   MAGIC,
   Replayer,
   readLog,
+  SpanList,
   toHex,
   toSequentialChanges,
   verifyLog,
@@ -123,11 +125,22 @@ describe('properties', () => {
           // The writer's own replay agrees with the reference model.
           expect(writer.state.files.get(0)!.text).toBe(expected);
           // A fresh reader + replayer agrees too.
-          const r = new Replayer({ provenance: true });
+          const events: EditEvent[] = [];
+          const r = new Replayer({ provenance: true, onEdit: (e) => events.push(e) });
           for (const entry of readLog(bytes).records) {
             expect(r.apply(entry.record).filter((x) => x.severity === 'fail')).toEqual([]);
           }
           expect(r.files.get(0)!.text).toBe(expected);
+          // The edit events alone rebuild the text and the origins (what the viewer animates).
+          let rebuilt = '';
+          const spans = new SpanList();
+          for (const e of events) {
+            rebuilt = rebuilt.slice(0, e.off) + e.ins + rebuilt.slice(e.off + e.del);
+            spans.remove(e.off, e.del);
+            spans.insert(e.off, e.ins.length, e.origin, e.seq);
+          }
+          expect(rebuilt).toBe(expected);
+          expect(spans.toArray()).toEqual(r.files.get(0)!.spans!.toArray());
           // Provenance stays aligned with the text.
           expect(r.composition().chars).toBe(expected.length);
           // And the full verifier finds no failures, with the right final hash.

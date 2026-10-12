@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.3 (Parts 1–2 implemented) |
+| **Status** | Draft v0.4 (Parts 1–3 implemented) |
 | **Recording model** | **Option C: full edit stream** (decided 2026-10-11, see §2.4) |
 | **Owner** | Abdullah |
 | **Last updated** | 2026-10-13 |
@@ -978,7 +978,7 @@ The "View" button opens a VS Code webview panel built from `@tap/ui`. It has no 
 
 ### 12.2 Security
 
-- CSP: `default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource}; img-src ${webview.cspSource} data:;` with no inline scripts.
+- CSP: `default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'nonce-…'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; worker-src blob:;` with no inline scripts. The style nonce lets CodeMirror add its base styles; the parsing worker is created from a `blob:` URL, the only kind webviews allow (see §22.3).
 - The extension host reads the log bytes and passes them to the webview with `postMessage` as an `ArrayBuffer`. The webview parses them with `@tap/core`.
 - Code text is always rendered as text, never as HTML.
 
@@ -1341,6 +1341,25 @@ Choices made while building, where this document was silent or the plan turned o
 | Disclosure | SESSION_START records the editor name (vscode, cursor, vscodium, windsurf…), enabled AI-assist extensions from a built-in list, Live Share, and the evidence-related settings | Lets a reader see the environment the code was written in. |
 | Packaging | The extension package is ESM in source and bundled by esbuild to `dist/extension.cjs`; publisher ID `abdullahforecasts` (can change before publishing) | VS Code loads extensions as CommonJS; keeping sources ESM lets the shared tools load them directly. |
 | Testing | Unit tests use a simulated editor and an in-memory stand-in for the VS Code API; tests inside a real VS Code run in CI on Windows, macOS and Linux (VS Code could not be downloaded in the development environment) | Fast local feedback plus real-editor checks. |
+
+### 22.3 Part 3 — viewer
+
+| Topic | Decision | Why |
+|---|---|---|
+| Replay data | `@tap/core`'s `Replayer` reports every text change with its origin (`onEdit`), including the region a snapshot replaces; the viewer keeps one track of changes per file with a full keyframe every 256 changes. The log format is unchanged | One replay engine for verifier and viewer, so the viewer's origins and composition are exactly the verifier's (tested). Keyframes make any position reachable in a few hundred steps. |
+| Time of each change | A change's time is the batch's time minus the `dt` of the changes after it | Records carry the time of the last change in a batch; this restores keystroke timing for playback and active time. |
+| Save History entries | One entry per save, per file, newest first; a save with no change since the previous one is folded into it (`SAVE ×2`). A run attaches to the latest save when nothing was edited in between; otherwise it is its own entry. A file's first entry covers the time since it entered the log. Entries show the path the file had when it was saved, with the current name if it was renamed | Matches how students think about their work ("I saved, then ran it") without hiding anything. |
+| "How it arrived" | Inserted non-whitespace characters between two saves, by origin (typed, pasted, internal copy with its source file, bulk…) | Simple to explain and to check against the replay; whitespace is excluded as in §10.3. |
+| Diffs | Computed in the viewer from the replayed texts at the two saves (Myers line diff, trimmed common prefix/suffix, falls back to "changed region replaced" beyond 4,000 differences) | Nothing extra is stored in the log; the bound keeps a pathological file from freezing the page. |
+| Interval replay | "Replay" on a save plays the file from the previous save and stops exactly at that save's content (tested against the SAVE hash for every save, in unit, property and browser tests) | Definition of done for Part 3. |
+| Highlighting | Typed text and text that was already there are not highlighted; every other origin is | Highlighting the common case would hide the rare ones that matter. |
+| Timeline | Drawn as plain SVG, not with uPlot. Quiet periods longer than 10 minutes become fixed-width breaks | The lanes are markers and ranges, not series; SVG needs no dependency, follows the theme with CSS, and keeps the CSP simple. |
+| Parsing off the UI thread | The worker is bundled inline and started from a `blob:` URL; if it cannot start, the viewer parses on the page instead | Webviews only allow `blob:`/`data:` workers. |
+| CSP | Adds `worker-src blob:` and a per-load style nonce (CodeMirror inserts a `<style>` element). Scripts are still only the bundled file; no inline script anywhere (tested in Chromium with the same policy) | Keeps §12.2's intent while making the editor component work. |
+| Live refresh | While the viewer is visible, every 2 s: write buffered edits to the log (without the disk sweep), send only the bytes appended since last time, and the folder's current files. A log that shrank or was replaced is sent again in full | The log is append-only, so the viewer parses only new blocks (incremental model, tested to equal a full load for any split). |
+| Comparing with the folder | The viewer and "TAP: Verify Log Integrity" compare the log with the folder's tracked files as they are now — the editor's text for open documents, the disk otherwise | Unsaved edits are in the log too; comparing with the disk alone would report a false mismatch. |
+| Opening speed | Model + verification of the 4-hour benchmark session: about 0.6 s; a 3-hour session opens in the browser in under 1 s. CI fails above 2 s (bench) | Part 3 budget: under 2 s. |
+| Build script | The root `pnpm build` filter is quoted (`"./packages/**"`) | Unquoted, the shell expanded the glob and the build silently did nothing on Linux and macOS (found in Part 3). |
 
 ---
 

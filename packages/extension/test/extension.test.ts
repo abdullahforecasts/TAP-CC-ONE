@@ -313,6 +313,93 @@ describe('recording through VS Code events', () => {
   });
 });
 
+describe('viewer', () => {
+  it('opens a webview with a strict CSP, sends the log, then only what was appended', async () => {
+    const folder = driver.addFolder(ws) as unknown as vscode.WorkspaceFolder;
+    const { controller } = await start();
+    await vscode.commands.executeCommand('tap.start');
+    const doc = driver.open(path.join(ws, 'main.c'));
+    driver.type(doc, '  return 0;\n', 'int main(void) {\n'.length);
+    driver.save(doc);
+
+    ui.answers.push(undefined);
+    await vscode.commands.executeCommand('tap.viewLog');
+    expect(ui.panels).toHaveLength(1);
+    const panel = ui.panels[0]!;
+    const csp = /Content-Security-Policy" content="([^"]+)"/.exec(panel.webview.html)![1]!;
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain('script-src https://webview.test;');
+    expect(csp).toMatch(/style-src https:\/\/webview.test 'nonce-[A-Za-z0-9+/=]+'/);
+    expect(csp).toContain('worker-src blob:');
+    expect(csp).not.toContain('unsafe');
+    // No inline script anywhere in the page.
+    expect(panel.webview.html.match(/<script[^>]*>/g)).toEqual([
+      expect.stringMatching(/<script src="[^"]+viewer\.js">/),
+    ]);
+
+    panel.webview.send({ type: 'ready' });
+    await until(() => panel.webview.posted.length === 1);
+    const first = panel.webview.posted[0] as {
+      type: string;
+      bytes: Uint8Array;
+      submission: Array<{ path: string }>;
+    };
+    expect(first.type).toBe('log');
+    expect(Buffer.from(first.bytes).equals(fs.readFileSync(path.join(ws, '.tap', 'log.codelog')))).toBe(true);
+    expect(first.submission.map((f) => f.path)).toEqual(['main.c']);
+
+    // Live refresh: unsaved typing is flushed to the log and only the new bytes are sent.
+    driver.type(doc, '// more\n', 0);
+    const viewer = controller.viewer(folder)!;
+    await viewer.refresh();
+    const second = panel.webview.posted[1] as {
+      type: string;
+      bytes: Uint8Array;
+      submission: Array<{ content: string }>;
+    };
+    expect(second.type).toBe('append');
+    const all = Buffer.concat([Buffer.from(first.bytes), Buffer.from(second.bytes)]);
+    expect(all.equals(fs.readFileSync(path.join(ws, '.tap', 'log.codelog')))).toBe(true);
+    expect(second.submission[0]!.content).toContain('// more'); // the editor's text, not the disk
+    await viewer.refresh();
+    expect(panel.webview.posted).toHaveLength(2); // nothing new
+
+    panel.webview.send({ type: 'status', state: 'ready', verdict: 'INTACT_WITH_WARNINGS', entries: 1 });
+    expect(viewer.status).toEqual({ state: 'ready', verdict: 'INTACT_WITH_WARNINGS', entries: 1 });
+    panel.webview.send({ type: 'status', state: 'error', message: 'boom' });
+    expect(ui.channels[0]!.lines.some((l) => l.includes('viewer: boom'))).toBe(true);
+    panel.webview.send({ type: 'openFile', path: '../outside.c' });
+
+    // A second "View Log" reveals the same panel; closing it forgets it.
+    await vscode.commands.executeCommand('tap.viewLog');
+    expect(ui.panels).toHaveLength(1);
+    expect(panel.revealed).toBe(1);
+    panel.dispose();
+    expect(controller.viewer(folder)).toBeUndefined();
+  });
+
+  it('starts over when the log is replaced, and reports a missing log', async () => {
+    const folder = driver.addFolder(ws) as unknown as vscode.WorkspaceFolder;
+    const { controller } = await start();
+    await vscode.commands.executeCommand('tap.start');
+    const viewer = controller.showViewer(folder);
+    const panel = ui.panels[0]!;
+    panel.webview.send({ type: 'ready' });
+    await until(() => panel.webview.posted.length === 1);
+    await vscode.commands.executeCommand('tap.stop');
+    const logPath = path.join(ws, '.tap', 'log.codelog');
+    const bytes = fs.readFileSync(logPath);
+    fs.rmSync(logPath);
+    fs.writeFileSync(logPath, bytes.subarray(0, bytes.length - 10));
+    await viewer.refresh();
+    expect((panel.webview.posted.at(-1) as { type: string }).type).toBe('log');
+    fs.rmSync(logPath);
+    panel.webview.send({ type: 'ready' });
+    await until(() => (panel.webview.posted.at(-1) as { type: string }).type === 'error');
+    viewer.dispose();
+  });
+});
+
 describe('commands', () => {
   it('shows the key fingerprint and copies it', async () => {
     driver.addFolder(ws);

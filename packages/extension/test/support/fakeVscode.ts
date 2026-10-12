@@ -47,6 +47,9 @@ export class Uri {
   static from(parts: { scheme: string; path: string }): Uri {
     return new Uri(parts.scheme, parts.path);
   }
+  static joinPath(base: Uri, ...segments: string[]): Uri {
+    return new Uri(base.scheme, path.join(base.fsPath, ...segments));
+  }
   get path(): string {
     return this.fsPath.split(path.sep).join('/');
   }
@@ -223,7 +226,54 @@ class LogChannel {
   dispose() {}
 }
 
+export enum ViewColumn {
+  Active = -1,
+  One = 1,
+}
+
+export class Webview {
+  html = '';
+  readonly cspSource = 'https://webview.test';
+  readonly posted: unknown[] = [];
+  private readonly received = new EventEmitter<unknown>();
+  readonly onDidReceiveMessage = this.received.event;
+  asWebviewUri(uri: Uri): Uri {
+    return uri;
+  }
+  async postMessage(message: unknown): Promise<boolean> {
+    this.posted.push(message);
+    return true;
+  }
+  /** Simulates a message from the page. */
+  send(message: unknown): void {
+    this.received.fire(message);
+  }
+}
+
+export class WebviewPanel {
+  readonly webview = new Webview();
+  visible = true;
+  revealed = 0;
+  private readonly disposed = new EventEmitter<void>();
+  private readonly viewState = new EventEmitter<unknown>();
+  readonly onDidDispose = this.disposed.event;
+  readonly onDidChangeViewState = this.viewState.event;
+  constructor(
+    readonly viewType: string,
+    readonly title: string,
+    readonly options: unknown,
+  ) {}
+  reveal(): void {
+    this.revealed++;
+  }
+  dispose(): void {
+    this.visible = false;
+    this.disposed.fire();
+  }
+}
+
 export const ui = {
+  panels: [] as WebviewPanel[],
   messages: [] as Message[],
   /** Answer the next message/quick pick/input box with these values (FIFO). */
   answers: [] as Array<string | undefined>,
@@ -246,6 +296,11 @@ export const window = {
     const item = new StatusBarItem();
     ui.statusItems.push(item);
     return item;
+  },
+  createWebviewPanel(viewType: string, title: string, _column: unknown, options: unknown): WebviewPanel {
+    const panel = new WebviewPanel(viewType, title, options);
+    ui.panels.push(panel);
+    return panel;
   },
   createOutputChannel(): LogChannel {
     const c = new LogChannel();
@@ -337,6 +392,7 @@ export interface FakeContext {
   globalState: Memento;
   workspaceState: Memento;
   globalStorageUri: Uri;
+  extensionUri: Uri;
   secrets: { get(k: string): Promise<string | undefined>; store(k: string, v: string): Promise<void> };
   extension: { packageJSON: { version: string } };
 }
@@ -350,6 +406,7 @@ export const driver = {
     workspace.workspaceFolders = [];
     workspace.textDocuments = [];
     ui.messages.length = 0;
+    ui.panels.length = 0;
     ui.answers.length = 0;
     ui.statusItems.length = 0;
     ui.channels.length = 0;
@@ -369,6 +426,7 @@ export const driver = {
       globalState: new Memento(),
       workspaceState: new Memento(),
       globalStorageUri: Uri.file(storageDir),
+      extensionUri: Uri.file(path.join(storageDir, 'extension')),
       secrets: {
         async get(k) {
           return secretStore.get(k);

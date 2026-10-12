@@ -11,7 +11,7 @@
     "node": ">=20.11"
   },
   "scripts": {
-    "build": "pnpm -r --filter ./packages/** run build",
+    "build": "pnpm -r --filter \"./packages/**\" run build",
     "build:browser-check": "pnpm --filter @tap/core run build:browser-check",
     "typecheck": "pnpm -r run typecheck",
     "lint": "biome check .",

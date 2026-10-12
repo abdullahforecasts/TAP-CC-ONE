@@ -18,6 +18,7 @@ import {
   utf8,
   verifyLog,
 } from '@tap/core';
+import { LogLoader } from '@tap/ui/model';
 import { benchRecorder } from './recorder.js';
 
 // Budgets for the core library on a mid-range laptop; generous so CI noise does not flake.
@@ -25,6 +26,7 @@ const BUDGET = {
   appendPerChangeUs: 50, // writer append + replay, amortised per change
   verifyMs: 4000, // full verification of the whole session
   sizeKB: 600, // log size for the session (design estimate: 120–200 KB)
+  viewerOpenMs: 2000, // viewer: build the model and verify (implementationGoals.md Part 3: under 2 s)
 };
 
 /** Deterministic pseudo-random numbers (mulberry32). */
@@ -168,6 +170,14 @@ async function main(): Promise<void> {
   const report = verifyLog(s.bytes);
   const verifyMs = performance.now() - v0;
 
+  // What the viewer does when it opens the log (in its worker): build the model, then verify.
+  const m0 = performance.now();
+  const loader = new LogLoader();
+  loader.reset(s.bytes);
+  const model = loader.model();
+  const modelMs = performance.now() - m0;
+  const openMs = modelMs + verifyMs;
+
   const perChangeUs = (s.appendMs * 1000) / s.changes;
   const sizeKB = s.bytes.length / 1024;
   const rows: Array<[string, string]> = [
@@ -179,6 +189,10 @@ async function main(): Promise<void> {
     ['final drain', `${s.drainMs.toFixed(1)} ms`],
     ['read whole log', `${readMs.toFixed(0)} ms`],
     ['full verification', `${verifyMs.toFixed(0)} ms → ${report.verdict}`],
+    [
+      'viewer: model + verify',
+      `${modelMs.toFixed(0)} + ${verifyMs.toFixed(0)} ms (${model.history.length} history entries, ${model.events.length} events)`,
+    ],
   ];
   const recorder = await benchRecorder();
   rows.push(['', ''], ...recorder.lines);
@@ -191,6 +205,9 @@ async function main(): Promise<void> {
   if (report.findings.some((f) => f.severity === 'fail')) failures.push('verification reported failures');
   if (perChangeUs > BUDGET.appendPerChangeUs)
     failures.push(`append ${perChangeUs.toFixed(1)} µs > ${BUDGET.appendPerChangeUs}`);
+  if (openMs > BUDGET.viewerOpenMs)
+    failures.push(`viewer open ${openMs.toFixed(0)} ms > ${BUDGET.viewerOpenMs}`);
+  if (model.problem) failures.push(`viewer model: ${model.problem}`);
   if (verifyMs > BUDGET.verifyMs) failures.push(`verify ${verifyMs.toFixed(0)} ms > ${BUDGET.verifyMs}`);
   if (sizeKB > BUDGET.sizeKB) failures.push(`size ${sizeKB.toFixed(0)} KB > ${BUDGET.sizeKB}`);
   if (failures.length > 0) {

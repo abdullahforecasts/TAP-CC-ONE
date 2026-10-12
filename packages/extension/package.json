@@ -2,7 +2,7 @@
   "name": "tap-cc-one",
   "displayName": "TAP-CC-ONE: Code Authorship Log",
   "description": "Records a tamper-evident history of how your code was written, so you can prove your work is your own.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "abdullahforecasts",
   "author": "Abdullah Nawaz",
   "license": "MIT",
@@ -46,6 +46,12 @@
   },
   "contributes": {
     "commands": [
+      {
+        "command": "tap.viewLog",
+        "title": "View Log (Save History & Replay)",
+        "category": "TAP",
+        "icon": "$(history)"
+      },
       {
         "command": "tap.start",
         "title": "Start Recording This Folder",
@@ -186,7 +192,7 @@
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "package": "node build.mjs --production && vsce package --no-dependencies --out tap-cc-one-0.1.0.vsix",
+    "package": "node build.mjs --production && vsce package --no-dependencies --out tap-cc-one-0.2.0.vsix",
     "test:integration": "node build.mjs && node build.mjs --tests && node ./out/test/runTest.cjs"
   },
   "dependencies": {
@@ -194,6 +200,7 @@
     "picomatch": "4.0.7"
   },
   "devDependencies": {
+    "@tap/ui": "workspace:*",
     "@types/mocha": "10.0.10",
     "@types/node": "22.20.5",
     "@types/picomatch": "4.0.3",

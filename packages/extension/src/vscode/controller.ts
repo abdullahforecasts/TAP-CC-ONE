@@ -10,6 +10,8 @@ import { createConfig, createMatcher, hasConfig } from '../storage/folderConfig.
 import { loadOrCreateKey } from '../storage/keystore.js';
 import { walkFiles } from '../storage/walk.js';
 import { FolderSession, type SessionStatus } from './folderSession.js';
+import { ViewerPanel } from './viewerPanel.js';
+import { workspaceFiles } from './workspaceFiles.js';
 
 const NEVER_KEY = 'tap.neverAsk';
 const DISABLED_KEY = 'tap.disabled';
@@ -46,6 +48,7 @@ export class Controller implements vscode.Disposable {
     reg('tap.showFingerprint', () => this.cmdFingerprint());
     reg('tap.verifyCurrent', () => this.cmdVerify());
     reg('tap.showMenu', () => this.cmdMenu());
+    reg('tap.viewLog', () => this.cmdView());
     this.disposables.push(
       vscode.workspace.onDidChangeWorkspaceFolders((e) => {
         for (const f of e.removed) {
@@ -67,6 +70,7 @@ export class Controller implements vscode.Disposable {
   }
 
   dispose(): void {
+    ViewerPanel.disposeAll();
     this.deactivate();
     for (const d of this.disposables) d.dispose();
   }
@@ -74,6 +78,22 @@ export class Controller implements vscode.Disposable {
   /** For tests and the menu. */
   session(folder: vscode.WorkspaceFolder): FolderSession | undefined {
     return this.sessions.get(folder.uri.toString());
+  }
+
+  /** The open viewer of a folder (tests). */
+  viewer(folder: vscode.WorkspaceFolder): ViewerPanel | undefined {
+    return ViewerPanel.of(folder);
+  }
+
+  /** Opens the viewer of a recorded folder. */
+  showViewer(folder: vscode.WorkspaceFolder): ViewerPanel {
+    return ViewerPanel.show(folder, {
+      extensionUri: this.context.extensionUri,
+      log: this.log,
+      flush: async (f) => {
+        await this.session(f)?.flush({ sweep: false });
+      },
+    });
   }
 
   private async getKey(): Promise<KeyPair> {
@@ -348,13 +368,23 @@ export class Controller implements vscode.Disposable {
     if (choice === 'Copy') await vscode.env.clipboard.writeText(fp);
   }
 
-  /** Verifies a folder's log against the files currently on disk. */
+  /**
+   * Verifies a folder's log against its tracked files as they are now (the editor's text for
+   * open documents, the disk otherwise).
+   */
   async verifyFolder(folder: vscode.WorkspaceFolder): Promise<VerifyReport | undefined> {
     const session = this.session(folder);
     await session?.flush();
     const logPath = path.join(folder.uri.fsPath, '.tap', 'log.codelog');
     if (!fs.existsSync(logPath)) return undefined;
     const bytes = new Uint8Array(fs.readFileSync(logPath));
+    if (hasConfig(folder.uri.fsPath)) {
+      try {
+        return verifyLog(bytes, { submission: await workspaceFiles(folder.uri.fsPath) });
+      } catch (e) {
+        this.log.warn(`${folder.name}: could not list the folder's files: ${String(e)}`);
+      }
+    }
     let paths: string[] = [];
     try {
       const r = new Replayer();
@@ -395,8 +425,22 @@ export class Controller implements vscode.Disposable {
     const summary = `${report.verdict.replace(/_/g, ' ')} — ${report.recordCount} records, ${report.stats.sessions} session(s)`;
     const show =
       report.verdict === 'NOT_INTACT' ? vscode.window.showErrorMessage : vscode.window.showInformationMessage;
-    const choice = await show(`TAP-CC-ONE: "${folder.name}" log is ${summary}.`, 'Show details');
+    const choice = await show(
+      `TAP-CC-ONE: "${folder.name}" log is ${summary}.`,
+      'Open Viewer',
+      'Show details',
+    );
     if (choice === 'Show details') this.log.show(true);
+    if (choice === 'Open Viewer') this.showViewer(folder);
+  }
+
+  private async cmdView(): Promise<void> {
+    const folder = await this.pickFolder((_, f) => hasConfig(f.uri.fsPath), "View which folder's log?");
+    if (!folder) {
+      void vscode.window.showInformationMessage('TAP-CC-ONE: no recorded folder is open.');
+      return;
+    }
+    this.showViewer(folder);
   }
 
   private async cmdMenu(): Promise<void> {
@@ -410,6 +454,7 @@ export class Controller implements vscode.Disposable {
       items.push({ label: '$(note) Add a note to the log', command: 'tap.addNote' });
       items.push({ label: '$(debug-stop) Stop recording', command: 'tap.stop' });
     }
+    items.push({ label: '$(history) View log (save history, replay)', command: 'tap.viewLog' });
     items.push({ label: '$(verified) Verify log integrity', command: 'tap.verifyCurrent' });
     items.push({ label: '$(key) Show key fingerprint', command: 'tap.showFingerprint' });
     if (

@@ -31,9 +31,29 @@ export interface FileState {
   spans?: SpanList;
 }
 
+/** One change to a file's text, as seen by the replay (for viewers that animate the log). */
+export interface EditEvent {
+  f: number;
+  /** Sequence number of the record that made the change. */
+  seq: number;
+  off: number;
+  del: number;
+  ins: string;
+  origin: Origin;
+  /** Change flags (0 for snapshots). */
+  flags: number;
+  /** For an internal copy: a live file that already contained the pasted text. */
+  copiedFrom?: string;
+}
+
 export interface ReplayerOptions {
   /** Track per-character origins (needed for composition). Default false. */
   provenance?: boolean;
+  /**
+   * Called for every change to a file's text: edits, and the regions replaced by snapshots
+   * (a new file's snapshot is an insertion at 0). Not called for changes the replay rejects.
+   */
+  onEdit?: (event: EditEvent) => void;
 }
 
 /** Plain copy of replay state, used for checkpoint caching and seeking. */
@@ -76,10 +96,12 @@ export class Replayer {
   readonly retired = new Set<number>();
   private readonly pendingExternal = new Map<number, { h: Uint8Array; seq: number }>();
   private readonly provenance: boolean;
+  private readonly onEdit: ((event: EditEvent) => void) | undefined;
   lastSeq = -1;
 
   constructor(options: ReplayerOptions = {}) {
     this.provenance = options.provenance ?? false;
+    this.onEdit = options.onEdit;
   }
 
   static fromSnapshot(snapshot: ReplaySnapshot, options: ReplayerOptions = {}): Replayer {
@@ -168,13 +190,24 @@ export class Replayer {
           issue('EDIT_OUT_OF_BOUNDS', 'fail', `change #${bad} (${off}+${del}) falls outside ${file.path}`);
           break;
         }
+        const tracking = file.spans !== undefined || this.onEdit !== undefined;
         for (const [, off, del, ins, flags = 0] of rec.b.c) {
+          let origin: Origin = 'typed';
+          let source: string | undefined;
+          if (tracking) {
+            if (ins.length > 0 && (flags & Flag.PASTE) !== 0) source = this.copySource(ins);
+            origin = originFromFlags(flags, source !== undefined);
+          }
           if (file.spans) {
-            const internal = ins.length > 0 && (flags & Flag.PASTE) !== 0 && this.existsInWorkspace(ins);
             file.spans.remove(off, del);
-            file.spans.insert(off, ins.length, originFromFlags(flags, internal), rec.s);
+            file.spans.insert(off, ins.length, origin, rec.s);
           }
           file.text = file.text.slice(0, off) + ins + file.text.slice(off + del);
+          if (this.onEdit) {
+            const event: EditEvent = { f: file.f, seq: rec.s, off, del, ins, origin, flags };
+            if (source !== undefined) event.copiedFrom = source;
+            this.onEdit(event);
+          }
         }
         break;
       }
@@ -278,14 +311,15 @@ export class Replayer {
     const state: FileState = { f, path, text };
     if (this.provenance) state.spans = SpanList.of(text.length, origin, seq);
     this.files.set(f, state);
+    if (text !== '') this.onEdit?.({ f, seq, off: 0, del: 0, ins: text, origin, flags: 0 });
   }
 
-  /** Whether `text` (EOL-normalised) already exists in any live file: a copy within the workspace. */
-  private existsInWorkspace(text: string): boolean {
+  /** A live file whose text (EOL-normalised) already contains `text`: a copy within the workspace. */
+  private copySource(text: string): string | undefined {
     const needle = normalizeText(text);
-    if (needle.trim().length === 0) return false;
-    for (const file of this.files.values()) if (normalizeText(file.text).includes(needle)) return true;
-    return false;
+    if (needle.trim().length === 0) return undefined;
+    for (const file of this.liveFiles()) if (normalizeText(file.text).includes(needle)) return file.path;
+    return undefined;
   }
 
   private applySnapshot(
@@ -369,11 +403,14 @@ export class Replayer {
     ) {
       suffix++;
     }
+    const del = old.length - prefix - suffix;
+    const ins = b.text.slice(prefix, b.text.length - suffix);
     if (existing.spans) {
-      existing.spans.remove(prefix, old.length - prefix - suffix);
-      existing.spans.insert(prefix, b.text.length - prefix - suffix, SNAPSHOT_PROVENANCE[b.origin], seq);
+      existing.spans.remove(prefix, del);
+      existing.spans.insert(prefix, ins.length, SNAPSHOT_PROVENANCE[b.origin], seq);
     }
     existing.text = b.text;
+    this.onEdit?.({ f: b.f, seq, off: prefix, del, ins, origin: SNAPSHOT_PROVENANCE[b.origin], flags: 0 });
   }
 }
 

@@ -1,5 +1,7 @@
-// Bundles the extension (and, with --tests, the integration tests) with esbuild.
-import { copyFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+// Bundles the extension (and, with --tests, the integration tests) with esbuild, and copies the
+// viewer (@tap/ui, built first if its sources changed) into dist/webview.
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
@@ -18,6 +20,29 @@ const common = {
   conditions: ['source'],
   logLevel: 'warning',
 };
+
+/** Newest modification time of the files under `dir`. */
+function newest(dir) {
+  let t = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true, recursive: true })) {
+    if (entry.isFile()) t = Math.max(t, statSync(join(entry.parentPath ?? entry.path, entry.name)).mtimeMs);
+  }
+  return t;
+}
+
+/** Builds the viewer bundle when it is missing or older than its sources, then copies it. */
+function viewer() {
+  const ui = join(here, '..', 'ui');
+  const bundle = join(ui, 'dist', 'viewer.js');
+  const sources = Math.max(newest(join(ui, 'src')), newest(join(here, '..', 'core', 'src')));
+  if (!existsSync(bundle) || statSync(bundle).mtimeMs < sources) {
+    const result = spawnSync(process.execPath, [join(ui, 'build.mjs')], { stdio: 'inherit' });
+    if (result.status !== 0) throw new Error('building the viewer (@tap/ui) failed');
+  }
+  const out = join(here, 'dist', 'webview');
+  mkdirSync(out, { recursive: true });
+  for (const name of ['viewer.js', 'viewer.css']) copyFileSync(join(ui, 'dist', name), join(out, name));
+}
 
 if (tests) {
   rmSync(join(here, 'out'), { recursive: true, force: true });
@@ -54,6 +79,7 @@ if (tests) {
     // vsce expects the license next to the manifest.
     copyFileSync(join(here, '..', '..', 'LICENSE'), join(here, 'LICENSE'));
   }
+  viewer();
   if (watch) {
     const ctx = await esbuild.context(options);
     await ctx.watch();

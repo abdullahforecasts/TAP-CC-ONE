@@ -180,9 +180,9 @@ export class FolderSession implements vscode.Disposable {
     await this.recorder?.addNote(text);
   }
 
-  /** Writes everything buffered to disk. */
-  async flush(): Promise<void> {
-    await this.recorder?.flush();
+  /** Writes everything buffered to disk (and, unless `sweep` is false, checks closed files). */
+  async flush(options: { sweep?: boolean } = {}): Promise<void> {
+    await this.recorder?.flush(options);
   }
 
   /** Stops recording cleanly (SESSION_END), releasing the lock. */

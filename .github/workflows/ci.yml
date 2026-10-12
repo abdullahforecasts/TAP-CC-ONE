@@ -32,6 +32,11 @@ jobs:
         run: pnpm test:coverage
       - name: Build
         run: pnpm build
+      - name: Viewer end-to-end tests in Chromium (CSP, vectors, replay)
+        if: runner.os == 'Linux'
+        run: |
+          pnpm --filter @tap/ui exec playwright install --with-deps chromium
+          pnpm --filter @tap/ui run e2e
       - name: Core must bundle for browsers (no Node-only APIs)
         run: pnpm build:browser-check
       - name: Vectors are deterministic and up to date

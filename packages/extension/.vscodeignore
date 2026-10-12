@@ -1,5 +1,7 @@
 **
 !dist/extension.cjs
+!dist/webview/viewer.js
+!dist/webview/viewer.css
 !package.json
 !README.md
 !CHANGELOG.md

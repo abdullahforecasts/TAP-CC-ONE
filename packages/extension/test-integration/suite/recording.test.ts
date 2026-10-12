@@ -225,6 +225,26 @@ suite('TAP-CC-ONE in VS Code', () => {
     assert.ok((report.composition?.byOrigin['paused-gap']?.chars ?? 0) > 0, 'gap recorded');
   });
 
+  test('opens the viewer, which reads the log in the webview', async () => {
+    await vscode.commands.executeCommand('workbench.action.files.saveAll');
+    await vscode.commands.executeCommand('tap.viewLog');
+    const viewer = controller.viewer(folder);
+    assert.ok(viewer, 'viewer panel opened');
+    // The page loads the bundle under the webview's CSP, parses the log in a worker and reports back.
+    await until(() => viewer.status.state !== 'loading', 30_000);
+    assert.equal(viewer.status.state, 'ready', viewer.status.message);
+    assert.ok((viewer.status.entries ?? 0) >= 3, `history entries: ${viewer.status.entries}`);
+    assert.ok(viewer.status.verdict?.startsWith('INTACT'), viewer.status.verdict);
+    // Live refresh picks up new records.
+    const before = viewer.status.entries ?? 0;
+    const editor = await openEditor('main.c');
+    moveToEnd(editor);
+    await typeText(editor, '// seen by the viewer\n');
+    await editor.document.save();
+    await until(() => (viewer.status.entries ?? 0) > before, 15_000);
+    viewer.dispose();
+  });
+
   test('stops with a log that verifies against the files on disk', async () => {
     await vscode.commands.executeCommand('workbench.action.files.saveAll');
     const report = await verify();

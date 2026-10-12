@@ -10,7 +10,7 @@ A VS Code extension that records a tamper-evident, independently timestamped his
 |---|---|---|
 | 1 | Foundations & core format (`@tap/core`, spec, test vectors, CI) | **Done** |
 | 2 | Recorder extension | **Done** (0.1.0 development build) |
-| 3 | Viewer: Save History & Replay | Planned |
+| 3 | Viewer: Save History & Replay | **Done** (0.2.0 development build) |
 | 4 | Timestamp anchoring | Planned |
 | 5 | Verifier (web + CLI) | Planned |
 | 6 | Hardening, beta & publishing | Planned |
@@ -28,8 +28,9 @@ spec/
   vectors/                conformance test vectors (generated, byte-exact)
 packages/
   core/                   @tap/core — format, chain, signatures, replay, provenance, verification
-  extension/              the VS Code extension (recorder, storage, VS Code wiring, tests)
-  anchor/ ui/ verifier-web/ cli/   placeholders for Parts 3–5
+  ui/                     @tap/ui — the log viewer (Save History, replay, timeline, composition)
+  extension/              the VS Code extension (recorder, viewer panel, storage, tests)
+  anchor/ verifier-web/ cli/   placeholders for Parts 4–5
 tools/
   gen-vectors/            deterministic test vector generator
   bench/                  performance benchmark (4-hour DSA session simulation)
@@ -54,19 +55,21 @@ Individual commands:
 | `pnpm test:coverage` | Same, with coverage thresholds (90% lines) |
 | `pnpm lint` / `pnpm lint:fix` | Biome lint and format |
 | `pnpm typecheck` | TypeScript strict checks for every package |
-| `pnpm build` | Compiles `@tap/core` to `packages/core/dist` |
+| `pnpm build` | Builds `@tap/core`, the viewer bundle and the extension |
 | `pnpm build:browser-check` | Bundles `@tap/core` for browsers (fails on Node-only APIs) |
 | `pnpm vectors:generate` | Regenerates `spec/vectors/` |
 | `pnpm vectors:check` | Fails if regenerated vectors differ from the committed ones |
 | `pnpm bench` | Simulates a 4-hour assignment and reports speed and log size |
 | `pnpm fuzz --seconds 60` | Fuzzes the verifier with mutated logs |
-| `pnpm --filter tap-cc-one run package` | Builds `packages/extension/tap-cc-one-0.1.0.vsix` |
+| `pnpm --filter @tap/ui run e2e` | Viewer end-to-end tests in Chromium (needs `pnpm --filter @tap/ui exec playwright install chromium` once) |
+| `pnpm --filter tap-cc-one run package` | Builds `packages/extension/tap-cc-one-0.2.0.vsix` |
 | `pnpm --filter tap-cc-one test:integration` | Runs the extension tests inside a real VS Code (downloads VS Code; on Linux use `xvfb-run -a`) |
 
 ## Trying the extension
 
 - **From source:** open the repo in VS Code and press **F5** (uses `.vscode/launch.json`). A second VS Code window opens with the extension loaded; open any folder with code there and choose **Start**.
-- **From the VSIX:** run `pnpm --filter tap-cc-one run package`, then in VS Code: Extensions view → `⋯` → **Install from VSIX…** → pick `packages/extension/tap-cc-one-0.1.0.vsix`.
+- **From the VSIX:** run `pnpm --filter tap-cc-one run package`, then in VS Code: Extensions view → `⋯` → **Install from VSIX…** → pick `packages/extension/tap-cc-one-0.2.0.vsix`.
+- **The viewer on its own:** `pnpm --filter @tap/ui build`, then serve `packages/ui/dist` with any static server and open a `.codelog` file in the page.
 
 Set `TAP_PROPERTY_RUNS=2000` to run the property tests harder than the default 150 cases.
 

@@ -11,3 +11,5 @@ Shots/
 out/
 *.vsix
 packages/extension/LICENSE
+test-results/
+playwright-report/

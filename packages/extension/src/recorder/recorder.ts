@@ -693,18 +693,19 @@ export class Recorder {
    * verifying or exporting): debounced watcher events are handled immediately and the disk is
    * swept for changes the watcher missed.
    */
-  flush(): Promise<void> {
+  flush(options: { sweep?: boolean } = {}): Promise<void> {
     if (this.stateValue === 'idle' || this.closed) return this.queue;
     const upTo = this.seal();
     const time = this.now();
-    const recording = this.stateValue === 'recording';
+    // A light flush (the viewer's live refresh) only writes buffered edits.
+    const full = this.stateValue === 'recording' && options.sweep !== false;
+    if (!full) return this.enqueue(() => this.appendEdits(upTo));
     const due = [...this.diskTimers.keys()];
     for (const timer of this.diskTimers.values()) clearTimeout(timer);
     this.diskTimers.clear();
-    if (recording) this.lastSweepMono = this.host.monoNow();
+    this.lastSweepMono = this.host.monoNow();
     return this.enqueue(async () => {
       await this.appendEdits(upTo);
-      if (!recording) return;
       for (const rel of due) await this.checkDisk(rel, time);
       await this.sweepDisk(time);
     });

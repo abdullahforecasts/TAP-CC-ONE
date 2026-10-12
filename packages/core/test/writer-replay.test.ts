@@ -488,3 +488,37 @@ describe('changes', () => {
     expect(() => applyChange('ab', -1, 0, '')).toThrow(RangeError);
   });
 });
+
+describe('Replayer edit events', () => {
+  it('reports snapshots as region replacements and names the source of internal copies', () => {
+    const w = newWriter();
+    w.append('FILE_SNAPSHOT', snap(0, 'util.c', 'int helper(void);\n'), T);
+    w.append('FILE_OP', { op: 'create', f: 1, path: 'main.c', origin: 'editor' }, T);
+    w.append('EDIT_BATCH', { f: 1, c: [[0, 0, 0, 'int helper(void);\n', Flag.PASTE]] }, T);
+    w.append('EDIT_BATCH', { f: 1, c: [[0, 18, 0, 'x', Flag.PASTE]] }, T);
+    w.append('EXTERNAL_CHANGE', { f: 1, h: contentHash('// top\nint helper(void);\nx') }, T);
+    w.append(
+      'FILE_SNAPSHOT',
+      { ...snap(1, 'main.c', '// top\nint helper(void);\nx'), origin: 'external' as const },
+      T,
+    );
+    const events: Array<Record<string, unknown>> = [];
+    const r = new Replayer({ onEdit: (e) => events.push({ ...e }) });
+    for (const e of readLog(w.drain()).records) r.apply(e.record);
+    expect(events).toEqual([
+      { f: 0, seq: 1, off: 0, del: 0, ins: 'int helper(void);\n', origin: 'preexisting', flags: 0 },
+      {
+        f: 1,
+        seq: 3,
+        off: 0,
+        del: 0,
+        ins: 'int helper(void);\n',
+        origin: 'internal-copy',
+        flags: Flag.PASTE,
+        copiedFrom: 'util.c',
+      },
+      { f: 1, seq: 4, off: 18, del: 0, ins: 'x', origin: 'paste', flags: Flag.PASTE },
+      { f: 1, seq: 6, off: 0, del: 0, ins: '// top\n', origin: 'external', flags: 0 },
+    ]);
+  });
+});
