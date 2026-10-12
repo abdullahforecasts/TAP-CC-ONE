@@ -7,3 +7,4 @@ coverage/
 fuzz-crashes/
 .DS_Store
 .pnpm-store/
+Shots/
