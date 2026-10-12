@@ -18,6 +18,7 @@ import {
   utf8,
   verifyLog,
 } from '@tap/core';
+import { benchRecorder } from './recorder.js';
 
 // Budgets for the core library on a mid-range laptop; generous so CI noise does not flake.
 const BUDGET = {
@@ -157,7 +158,7 @@ function simulate() {
   return { bytes, changes, saves, records, appendMs, drainMs, hours: m / 3_600_000 };
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const assert = process.argv.includes('--assert');
   const s = simulate();
   const r0 = performance.now();
@@ -179,10 +180,14 @@ function main(): void {
     ['read whole log', `${readMs.toFixed(0)} ms`],
     ['full verification', `${verifyMs.toFixed(0)} ms → ${report.verdict}`],
   ];
+  const recorder = await benchRecorder();
+  rows.push(['', ''], ...recorder.lines);
   const width = Math.max(...rows.map(([k]) => k.length));
-  for (const [k, v] of rows) console.log(`${k.padEnd(width)}  ${v}`);
+  for (const [k, v] of rows) console.log(k ? `${k.padEnd(width)}  ${v}` : '');
 
   const failures: string[] = [];
+  if (!recorder.ok)
+    failures.push('recorder change handler over budget (avg 0.2 ms / p99 1 ms) or log failed');
   if (report.findings.some((f) => f.severity === 'fail')) failures.push('verification reported failures');
   if (perChangeUs > BUDGET.appendPerChangeUs)
     failures.push(`append ${perChangeUs.toFixed(1)} µs > ${BUDGET.appendPerChangeUs}`);
@@ -196,4 +201,4 @@ function main(): void {
   }
 }
 
-main();
+void main();

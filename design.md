@@ -4,10 +4,10 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.2 |
+| **Status** | Draft v0.3 (Parts 1–2 implemented) |
 | **Recording model** | **Option C: full edit stream** (decided 2026-10-11, see §2.4) |
 | **Owner** | Abdullah |
-| **Last updated** | 2026-10-11 |
+| **Last updated** | 2026-10-13 |
 | **First target** | VS Code and compatible editors (Cursor, Windsurf, VSCodium, code-server) on Windows, macOS and Linux |
 | **Cost constraint** | $0 running cost: no paid servers or paid services |
 
@@ -38,6 +38,7 @@
 19. [Roadmap and milestones](#19-roadmap-and-milestones)
 20. [Risks and open questions](#20-risks-and-open-questions)
 21. [Glossary](#21-glossary)
+22. [Decisions made during implementation](#22-decisions-made-during-implementation)
 - [Appendix A — CDDL schema](#appendix-a--cddl-schema)
 - [Appendix B — Example verification report](#appendix-b--example-verification-report)
 - [Appendix C — Test vector catalogue](#appendix-c--test-vector-catalogue)
@@ -497,7 +498,7 @@ offset  size  field
 9+n     4     crc32         CRC-32/ISO-HDLC over bytes [0 .. 9+n)
 ```
 
-- **Limits:** `raw_len ≤ 1 MiB` and `payload_len ≤ raw_len + 1 KiB`. The verifier rejects anything larger *before* allocating.
+- **Limits:** `raw_len ≤ 8 MiB` and `payload_len ≤ raw_len + 1 KiB`. The verifier rejects anything larger *before* allocating. (Raised from 1 MiB during implementation; see §22.1.)
 - **Decompressed payload:** a CBOR sequence (RFC 8742) of one or more records.
 - CRC protects against storage corruption. Integrity against tampering comes from the hash chain, not the CRC.
 
@@ -803,7 +804,7 @@ At the end, the verifier sums the span lengths per origin **over the submitted f
 Used only when hashing for SAVE/state/submission comparison:
 
 1. Decode as UTF-8 (submitted files). Strip a leading BOM.
-2. Convert `\r\n` and lone `\r` to `\n`.
+2. Remove every run of `\r` directly before `\n` (so `\r\n` and `\r\r\n` become `\n`), then convert remaining lone `\r` to `\n`. (Changed during implementation so the result survives Git's line-ending conversion; see §22.1.)
 3. No other changes: no trimming, no Unicode normalisation (that would hide real differences).
 
 ---
@@ -834,7 +835,7 @@ Used only when hashing for SAVE/state/submission comparison:
     .gitignore           # ignores lock, quarantine/
 ```
 
-Shadow copy: `globalStorageUri/logs/<logIdHex>.codelog`, mirrored byte for byte after every block write. On open, if the workspace log is missing or shorter than the shadow and its prefix matches, offer to restore it.
+Shadow copy: `globalStorageUri/logs/<logIdHex>.codelog`, mirrored byte for byte after every block write. On open, if the workspace log is missing or shorter than the shadow and its prefix matches, it is restored automatically and a warning is shown (see §22.2).
 
 ### 11.3 Module structure
 
@@ -1295,6 +1296,48 @@ The instructor publishes `tap-course.json`, containing the assignment id, the op
 | **Shadow text** | Recorder's in-memory replay of a file, used for self-checks |
 | **State digest** | Hash committing to all live files' paths and content hashes |
 | **TSA** | Time Stamping Authority (RFC 3161) |
+
+
+---
+
+## 22. Decisions made during implementation
+
+Choices made while building, where this document was silent or the plan turned out to need a change. The format-level ones are also in `spec/log-format-v1.md` Appendix A, which is normative.
+
+### 22.1 Part 1 — core format
+
+| Topic | Originally | As built | Why |
+|---|---|---|---|
+| Maximum block size (§7.3) | 1 MiB | 8 MiB | A tracked file may be up to 1 MiB, and a snapshot of non-ASCII text can take up to 3 bytes per character in UTF-8, so 1 MiB blocks could not hold every legal snapshot. |
+| Line-ending normalisation (§10.4) | CRLF and lone CR → LF | A run of CRs before LF is removed, then lone CR → LF | Found by property testing: with single-CR handling, text like `a\r\r\n` hashed differently after Git's CRLF → LF conversion, so an honest submission could fail to match its log. |
+| Change flags (§7.6.4) | "omitted when 0" | Omitted when 0, never present as 0; UNDO/REDO and PASTE/BULK mutually exclusive; LARGE set exactly above 256 KiB | Every change has exactly one valid encoding. |
+| Header keys (§7.4) | Not specified | Unknown header keys are rejected | Header changes are format changes and bump `fmt`. |
+| RECOVERY and KEY_ROTATION (§7.6) | Not specified relative to sessions | Allowed between sessions; RECOVERY closes a session left open by a crash | Matches what a recorder does after a crash or a lost key. |
+| Snapshots of known files (§10.3) | Whole file gets the snapshot's origin | Only the region that changed (common prefix/suffix removed) | One line edited outside the editor no longer relabels the whole file. |
+| Verdict without anchors (§13.3) | — | Logs without timestamps are INTACT WITH WARNINGS (`NO_ANCHORS`) | Times in an unanchored log are self-asserted, and the report says so. |
+| Unprotected tail | — | Records after the last checkpoint can be removed or the very last record changed without breaking the chain | Inherent to hash chains; the recorder writes a checkpoint at every session end, pause and export, so the tail is at most a SESSION_END. |
+| Anchor checks in Part 1 | Full token verification | `ck`/`d` consistency only; tokens verified from Part 4 | Part 1 scope. Test vector 102 uses placeholder tokens. |
+
+### 22.2 Part 2 — recorder extension
+
+| Topic | Decision | Why |
+|---|---|---|
+| Revert File / discarded unsaved edits | Recorded as one EDIT_BATCH change flagged UNDO (from the recorded text back to the saved text), not as an external change | The text was already in the log; treating it as "changed outside the editor" would count against an honest student. Detected because the new text equals the last saved content. |
+| Reload of a clean open document | A change event with no undo/redo reason that leaves the document clean (and is not part of a save) is the editor reloading the file from disk: recorded as EXTERNAL_CHANGE plus an external snapshot | VS Code reports reloads as ordinary edits; without this, another program's changes would look typed. |
+| Unsaved edits restored after a restart (hot exit) | Not treated as an external change when the file on disk still equals the last saved version | The log's newer text was unsaved editor content that comes back when the editor restores the document. |
+| Lone UTF-16 surrogates | Stored as U+FFFD (same length, so offsets stay valid); comparisons treat the two forms as equal | Found by randomised testing: a broken half of an emoji (possible through programmatic edits) would otherwise stop recording. |
+| File first seen through an edit or a save | FILE_OP create plus a `created` snapshot of its text | The recorder never saw it being written, so the log says so. |
+| File created with content through the editor (copy, "save as", template) | `created` snapshot from disk, but only if the user has not already started typing in it | Avoids recording the same text twice. |
+| Document opened with text that differs from the log | UNDO change if it equals the last saved version, otherwise a `resync` snapshot | Keeps the log equal to what the editor shows. |
+| Missing or truncated `.tap/log.codelog` | Restored from the backup copy automatically, with a warning, when the backup is the same log plus more | Accidental deletion (e.g. `git clean`) should not cost a student their history; restoring never loses data. |
+| Pause across window reloads | Remembered; the next session starts with SESSION_START, CHECKPOINT, PAUSE, and changes are reconciled as `paused-gap` on resume | A reload should not silently resume recording. |
+| Stop Recording | Ends the session and turns off automatic resume for that folder until "Start Recording" is used again | Otherwise the existing `.tap/` would restart recording on the next window. |
+| Second window on the same folder | Lock file with a 10 s heartbeat; a lock is stale after 30 s; the second window stays read-only and says so | Two writers would corrupt the log. |
+| Signing key storage | VS Code SecretStorage, checked by reading the key back; falls back to a `0600` file in the extension's storage with a one-time notice; KEY_ROTATION is written automatically when the key differs from the previous session's | Some Linux setups have no working keychain. |
+| Terminal commands | Not recorded yet; planned for Part 4 with the terminal shell-integration API | As in `implementationGoals.md`. |
+| Disclosure | SESSION_START records the editor name (vscode, cursor, vscodium, windsurf…), enabled AI-assist extensions from a built-in list, Live Share, and the evidence-related settings | Lets a reader see the environment the code was written in. |
+| Packaging | The extension package is ESM in source and bundled by esbuild to `dist/extension.cjs`; publisher ID `abdullahforecasts` (can change before publishing) | VS Code loads extensions as CommonJS; keeping sources ESM lets the shared tools load them directly. |
+| Testing | Unit tests use a simulated editor and an in-memory stand-in for the VS Code API; tests inside a real VS Code run in CI on Windows, macOS and Linux (VS Code could not be downloaded in the development environment) | Fast local feedback plus real-editor checks. |
 
 ---
 

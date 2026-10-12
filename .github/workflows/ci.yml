@@ -40,3 +40,34 @@ jobs:
         run: pnpm bench --assert
       - name: Short fuzz run
         run: pnpm fuzz --seconds 30
+
+  vscode:
+    name: VS Code integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Integration tests in a real VS Code (Linux, virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pnpm --filter tap-cc-one test:integration
+      - name: Integration tests in a real VS Code
+        if: runner.os != 'Linux'
+        run: pnpm --filter tap-cc-one test:integration
+      - name: Package the extension
+        if: runner.os == 'Linux'
+        run: pnpm --filter tap-cc-one run package
+      - name: Upload the VSIX
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tap-cc-one-vsix
+          path: packages/extension/*.vsix

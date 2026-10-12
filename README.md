@@ -9,7 +9,7 @@ A VS Code extension that records a tamper-evident, independently timestamped his
 | Part | Scope | Status |
 |---|---|---|
 | 1 | Foundations & core format (`@tap/core`, spec, test vectors, CI) | **Done** |
-| 2 | Recorder extension | Planned |
+| 2 | Recorder extension | **Done** (0.1.0 development build) |
 | 3 | Viewer: Save History & Replay | Planned |
 | 4 | Timestamp anchoring | Planned |
 | 5 | Verifier (web + CLI) | Planned |
@@ -28,7 +28,8 @@ spec/
   vectors/                conformance test vectors (generated, byte-exact)
 packages/
   core/                   @tap/core — format, chain, signatures, replay, provenance, verification
-  anchor/ ui/ extension/ verifier-web/ cli/   placeholders for Parts 2–5
+  extension/              the VS Code extension (recorder, storage, VS Code wiring, tests)
+  anchor/ ui/ verifier-web/ cli/   placeholders for Parts 3–5
 tools/
   gen-vectors/            deterministic test vector generator
   bench/                  performance benchmark (4-hour DSA session simulation)
@@ -59,6 +60,13 @@ Individual commands:
 | `pnpm vectors:check` | Fails if regenerated vectors differ from the committed ones |
 | `pnpm bench` | Simulates a 4-hour assignment and reports speed and log size |
 | `pnpm fuzz --seconds 60` | Fuzzes the verifier with mutated logs |
+| `pnpm --filter tap-cc-one run package` | Builds `packages/extension/tap-cc-one-0.1.0.vsix` |
+| `pnpm --filter tap-cc-one test:integration` | Runs the extension tests inside a real VS Code (downloads VS Code; on Linux use `xvfb-run -a`) |
+
+## Trying the extension
+
+- **From source:** open the repo in VS Code and press **F5** (uses `.vscode/launch.json`). A second VS Code window opens with the extension loaded; open any folder with code there and choose **Start**.
+- **From the VSIX:** run `pnpm --filter tap-cc-one run package`, then in VS Code: Extensions view → `⋯` → **Install from VSIX…** → pick `packages/extension/tap-cc-one-0.1.0.vsix`.
 
 Set `TAP_PROPERTY_RUNS=2000` to run the property tests harder than the default 150 cases.
 

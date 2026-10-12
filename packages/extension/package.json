@@ -1,9 +1,206 @@
 {
   "name": "tap-cc-one",
-  "private": true,
-  "version": "0.0.0",
-  "description": "The VS Code extension: records authorship history and opens the read-only viewer.",
+  "displayName": "TAP-CC-ONE: Code Authorship Log",
+  "description": "Records a tamper-evident history of how your code was written, so you can prove your work is your own.",
+  "version": "0.1.0",
+  "publisher": "abdullahforecasts",
   "author": "Abdullah Nawaz",
   "license": "MIT",
-  "type": "module"
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/abdullahforecasts/TAP-CC-ONE"
+  },
+  "homepage": "https://github.com/abdullahforecasts/TAP-CC-ONE#readme",
+  "bugs": {
+    "url": "https://github.com/abdullahforecasts/TAP-CC-ONE/issues"
+  },
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Education",
+    "Other"
+  ],
+  "keywords": [
+    "plagiarism",
+    "authorship",
+    "academic integrity",
+    "students",
+    "proof of work"
+  ],
+  "main": "./dist/extension.cjs",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "workspaceContains:.tap/config.json",
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "tap.start",
+        "title": "Start Recording This Folder",
+        "category": "TAP",
+        "icon": "$(record)"
+      },
+      {
+        "command": "tap.stop",
+        "title": "Stop Recording This Folder",
+        "category": "TAP",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "tap.pause",
+        "title": "Pause Recording",
+        "category": "TAP",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "tap.resume",
+        "title": "Resume Recording",
+        "category": "TAP",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "tap.addNote",
+        "title": "Add Note to Log",
+        "category": "TAP",
+        "icon": "$(note)"
+      },
+      {
+        "command": "tap.showFingerprint",
+        "title": "Show Key Fingerprint",
+        "category": "TAP",
+        "icon": "$(key)"
+      },
+      {
+        "command": "tap.verifyCurrent",
+        "title": "Verify Log Integrity",
+        "category": "TAP",
+        "icon": "$(verified)"
+      },
+      {
+        "command": "tap.showMenu",
+        "title": "Show Recording Menu",
+        "category": "TAP",
+        "icon": "$(list-unordered)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "tap.showMenu",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "TAP-CC-ONE",
+      "properties": {
+        "tap.promptOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask whether to record authorship history when a folder containing code is opened."
+        },
+        "tap.include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/*.{c,h,cpp,cc,cxx,hpp,hh,hxx,py,pyw,ipynb,java,kt,kts,js,jsx,mjs,cjs,ts,tsx,cs,go,rs,rb,php,swift,m,mm,sql,html,htm,css,scss,sass,less,sh,bash,zsh,ps1,r,jl,hs,ml,mli,scala,lua,dart,asm,s,vhd,vhdl,v,sv,md,txt,json,yaml,yml,toml,xml,gradle,cmake,mk}",
+            "**/Makefile",
+            "**/makefile",
+            "**/CMakeLists.txt",
+            "**/Dockerfile"
+          ],
+          "description": "Glob patterns (relative to the folder) of files to record. Copied into .tap/config.json when recording starts."
+        },
+        "tap.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/.git/**",
+            "**/.tap/**",
+            "**/node_modules/**",
+            "**/.venv/**",
+            "**/venv/**",
+            "**/__pycache__/**",
+            "**/build/**",
+            "**/dist/**",
+            "**/out/**",
+            "**/target/**",
+            "**/bin/**",
+            "**/obj/**",
+            "**/.idea/**",
+            "**/.vscode-test/**",
+            "**/.pnpm-store/**"
+          ],
+          "description": "Glob patterns of files never recorded. Copied into .tap/config.json when recording starts."
+        },
+        "tap.maxFileSizeKB": {
+          "type": "number",
+          "default": 1024,
+          "minimum": 1,
+          "maximum": 4096,
+          "description": "Files larger than this are not recorded."
+        },
+        "tap.record.focus": {
+          "type": "boolean",
+          "default": true,
+          "description": "Record when the VS Code window gains or loses focus. Disclosed in the log."
+        },
+        "tap.classify.clipboardCheckMinChars": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "description": "Insertions at least this long are compared with the clipboard to detect pastes. The clipboard itself is never stored."
+        },
+        "tap.classify.bulkMinChars": {
+          "type": "number",
+          "default": 40,
+          "minimum": 2,
+          "description": "Non-paste insertions at least this long are marked as bulk insertions (completions, snippets, AI suggestions)."
+        },
+        "tap.checkpoint.intervalSec": {
+          "type": "number",
+          "default": 300,
+          "minimum": 60,
+          "description": "How often a signed checkpoint is written while you are working."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "package": "node build.mjs --production && vsce package --no-dependencies --out tap-cc-one-0.1.0.vsix",
+    "test:integration": "node build.mjs && node build.mjs --tests && node ./out/test/runTest.cjs"
+  },
+  "dependencies": {
+    "@tap/core": "workspace:*",
+    "picomatch": "4.0.7"
+  },
+  "devDependencies": {
+    "@types/mocha": "10.0.10",
+    "@types/node": "22.20.5",
+    "@types/picomatch": "4.0.3",
+    "@types/vscode": "1.93.0",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
+    "esbuild": "0.28.2",
+    "mocha": "11.7.5"
+  }
 }

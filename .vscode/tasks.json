@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build extension",
+      "type": "shell",
+      "command": "npx pnpm@10.28.0 --filter tap-cc-one run build",
+      "problemMatcher": [],
+      "group": "build"
+    }
+  ]
+}

@@ -8,3 +8,6 @@ fuzz-crashes/
 .DS_Store
 .pnpm-store/
 Shots/
+out/
+*.vsix
+packages/extension/LICENSE
