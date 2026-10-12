@@ -1,0 +1,42 @@
+{
+  "id": "008",
+  "title": "File changed outside the editor",
+  "description": "After typing, one line of the file is changed on disk by another program. EXTERNAL_CHANGE is followed by an external snapshot; only the changed region is attributed to external.",
+  "verdict": "INTACT_WITH_WARNINGS",
+  "findings": [
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    },
+    {
+      "code": "EXTERNAL_CHANGE",
+      "severity": "info"
+    }
+  ],
+  "recordCount": 9,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "app.c",
+      "length": 23,
+      "sha256": "ab5802907286c838efd66f90371c6727145f630495f52bb90db702bfc9ed5b49"
+    }
+  ],
+  "composition": {
+    "chars": 23,
+    "nonWs": 15,
+    "byOrigin": {
+      "typed": {
+        "chars": 22,
+        "nonWs": 14
+      },
+      "external": {
+        "chars": 1,
+        "nonWs": 1
+      }
+    }
+  },
+  "submittedPaths": [
+    "app.c"
+  ]
+}

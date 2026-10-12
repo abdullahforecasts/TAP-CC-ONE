@@ -1,0 +1,34 @@
+{
+  "id": "002",
+  "title": "One file typed, saved and checkpointed",
+  "description": "A new main.cpp is created and typed character by character, saved, and covered by a signed checkpoint. The submission matches.",
+  "verdict": "INTACT_WITH_WARNINGS",
+  "findings": [
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    }
+  ],
+  "recordCount": 10,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "main.cpp",
+      "length": 69,
+      "sha256": "b2cdf865d5d82e3939ff66b82af8bdbe5745e7ee786fc3aec7d2249e3e141b29"
+    }
+  ],
+  "composition": {
+    "chars": 69,
+    "nonWs": 53,
+    "byOrigin": {
+      "typed": {
+        "chars": 69,
+        "nonWs": 53
+      }
+    }
+  },
+  "submittedPaths": [
+    "main.cpp"
+  ]
+}

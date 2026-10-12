@@ -1,0 +1,17 @@
+{
+  "name": "@tap/bench",
+  "private": true,
+  "version": "0.1.0",
+  "author": "Abdullah Nawaz",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@tap/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5"
+  }
+}

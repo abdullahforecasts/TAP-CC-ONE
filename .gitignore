@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-browser/
+coverage/
+*.tsbuildinfo
+.vscode-test/
+fuzz-crashes/
+.DS_Store
+.pnpm-store/

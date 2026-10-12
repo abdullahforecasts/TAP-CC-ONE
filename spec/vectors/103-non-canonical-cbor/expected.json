@@ -1,0 +1,16 @@
+{
+  "id": "103",
+  "title": "Record with unsorted map keys",
+  "description": "The SESSION_END record of vector 001 is re-encoded with its map keys in reverse order. The content is the same, but the encoding is not deterministic, so the parser rejects it.",
+  "verdict": "NOT_INTACT",
+  "findings": [
+    {
+      "code": "CBOR_NONCANONICAL",
+      "severity": "fail"
+    }
+  ],
+  "recordCount": 0,
+  "finalFiles": [],
+  "composition": null,
+  "submittedPaths": []
+}

@@ -1,0 +1,36 @@
+{
+  "id": "102",
+  "title": "Record removed and whole chain rebuilt and re-signed",
+  "description": "The student removes a NOTE, renumbers, rebuilds the hash chain and re-signs every checkpoint with their own key. The anchor records still carry the digests that were timestamped before the edit, so they no longer match. (Timestamp tokens here are placeholders; real token verification arrives with anchoring.)",
+  "verdict": "NOT_INTACT",
+  "findings": [
+    {
+      "code": "ANCHOR_DIGEST_MISMATCH",
+      "severity": "fail"
+    },
+    {
+      "code": "ANCHOR_DIGEST_MISMATCH",
+      "severity": "fail"
+    }
+  ],
+  "recordCount": 11,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "q1.py",
+      "length": 20,
+      "sha256": "7d6e86a89a160211d2098f7cd9b9ce1324df95ba96e0aafb7e1305872e567621"
+    }
+  ],
+  "composition": {
+    "chars": 20,
+    "nonWs": 16,
+    "byOrigin": {
+      "typed": {
+        "chars": 20,
+        "nonWs": 16
+      }
+    }
+  },
+  "submittedPaths": []
+}

@@ -1,0 +1,44 @@
+{
+  "id": "009",
+  "title": "Pause, edit while paused, resume",
+  "description": "Recording is paused, the file changes while paused, and on resume a paused-gap snapshot records the difference. The verifier flags the gap.",
+  "verdict": "INTACT_WITH_WARNINGS",
+  "findings": [
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    },
+    {
+      "code": "PAUSED",
+      "severity": "info"
+    },
+    {
+      "code": "PAUSED_GAP_CHANGES",
+      "severity": "warn"
+    }
+  ],
+  "recordCount": 11,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "main.py",
+      "length": 12,
+      "sha256": "8353afe579a16d27abc038055bf713459ba6ef418c65b143b526a09dd529e500"
+    }
+  ],
+  "composition": {
+    "chars": 12,
+    "nonWs": 6,
+    "byOrigin": {
+      "typed": {
+        "chars": 6,
+        "nonWs": 3
+      },
+      "paused-gap": {
+        "chars": 6,
+        "nonWs": 3
+      }
+    }
+  },
+  "submittedPaths": []
+}

@@ -1,0 +1,36 @@
+{
+  "id": "012",
+  "title": "Signing key replaced between sessions",
+  "description": "The first session signs with key A. The key is lost (e.g. OS reinstall), so KEY_ROTATION announces key B, and the next session signs with key B.",
+  "verdict": "INTACT_WITH_WARNINGS",
+  "findings": [
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    },
+    {
+      "code": "KEY_ROTATED",
+      "severity": "warn"
+    }
+  ],
+  "recordCount": 12,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "hw.py",
+      "length": 12,
+      "sha256": "fe9c2dadb34bee2ae03fc8fe25e26c64ce2f572a53a127db5d6e73899b64fc11"
+    }
+  ],
+  "composition": {
+    "chars": 12,
+    "nonWs": 6,
+    "byOrigin": {
+      "typed": {
+        "chars": 12,
+        "nonWs": 6
+      }
+    }
+  },
+  "submittedPaths": []
+}

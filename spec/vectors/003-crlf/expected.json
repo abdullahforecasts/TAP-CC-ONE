@@ -1,0 +1,38 @@
+{
+  "id": "003",
+  "title": "CRLF file edited across line endings",
+  "description": "A preexisting Windows (CRLF) file is edited, including a deletion that spans a CRLF. Offsets count \\r\\n as two units. The LF submission still matches because comparison normalises line endings.",
+  "verdict": "INTACT_WITH_WARNINGS",
+  "findings": [
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    }
+  ],
+  "recordCount": 7,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "notes.txt",
+      "length": 32,
+      "sha256": "93456e255b64bf3a604bc9533be0e417248ae666b031cb37a256788f86e0c760"
+    }
+  ],
+  "composition": {
+    "chars": 32,
+    "nonWs": 24,
+    "byOrigin": {
+      "preexisting": {
+        "chars": 22,
+        "nonWs": 16
+      },
+      "typed": {
+        "chars": 10,
+        "nonWs": 8
+      }
+    }
+  },
+  "submittedPaths": [
+    "notes.txt"
+  ]
+}

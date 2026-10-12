@@ -1,0 +1,58 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": {
+    "includes": ["**", "!**/dist", "!**/dist-browser", "!**/coverage", "!spec/vectors", "!**/*.md"]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 110
+  },
+  "javascript": {
+    "formatter": { "quoteStyle": "single", "semicolons": "always", "trailingCommas": "all" }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "style": {
+        "noNonNullAssertion": "off",
+        "useNumberNamespace": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "error"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["packages/core/src/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "vscode": "@tap/core must not depend on the VS Code API.",
+                  "fs": "@tap/core must run in browsers: no Node-only modules.",
+                  "node:fs": "@tap/core must run in browsers: no Node-only modules.",
+                  "path": "@tap/core must run in browsers: no Node-only modules.",
+                  "node:path": "@tap/core must run in browsers: no Node-only modules.",
+                  "crypto": "Use @noble/hashes and @noble/curves instead.",
+                  "node:crypto": "Use @noble/hashes and @noble/curves instead.",
+                  "zlib": "Use fflate instead.",
+                  "node:zlib": "Use fflate instead.",
+                  "buffer": "Use Uint8Array instead.",
+                  "node:buffer": "Use Uint8Array instead."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

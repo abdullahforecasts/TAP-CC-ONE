@@ -1,0 +1,20 @@
+{
+  "name": "@tap/gen-vectors",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Deterministic generator for the spec/vectors conformance test vectors.",
+  "author": "Abdullah Nawaz",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@tap/core": "workspace:*",
+    "cborg": "4.5.8",
+    "fflate": "0.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5"
+  }
+}

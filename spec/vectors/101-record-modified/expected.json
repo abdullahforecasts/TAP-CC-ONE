@@ -1,0 +1,17 @@
+{
+  "id": "101",
+  "title": "Record edited and checksum recomputed",
+  "description": "An attacker changes typed text inside an EDIT_BATCH (\"hi\" becomes \"HI\") and recomputes the block CRC. The hash chain breaks at the next record.",
+  "verdict": "NOT_INTACT",
+  "findings": [
+    {
+      "code": "CHAIN_BROKEN",
+      "severity": "fail",
+      "seq": 6
+    }
+  ],
+  "recordCount": 10,
+  "finalFiles": [],
+  "composition": null,
+  "submittedPaths": []
+}

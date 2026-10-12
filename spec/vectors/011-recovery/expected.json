@@ -1,0 +1,42 @@
+{
+  "id": "011",
+  "title": "Crash, truncated tail, recovery",
+  "description": "The last block was only partly written when the editor crashed. On reopening, the damaged tail is quarantined, the file truncated, and a RECOVERY record appended before the next session.",
+  "verdict": "INTACT_WITH_WARNINGS",
+  "findings": [
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    },
+    {
+      "code": "RECOVERED",
+      "severity": "warn"
+    },
+    {
+      "code": "SESSION_NOT_CLOSED",
+      "severity": "info"
+    }
+  ],
+  "recordCount": 11,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "main.c",
+      "length": 31,
+      "sha256": "57b9a643ad8840d8b26e9deccd86faba017ebd91037aa4e4124d6005e2e90cf8"
+    }
+  ],
+  "composition": {
+    "chars": 31,
+    "nonWs": 23,
+    "byOrigin": {
+      "typed": {
+        "chars": 31,
+        "nonWs": 23
+      }
+    }
+  },
+  "submittedPaths": [
+    "main.c"
+  ]
+}

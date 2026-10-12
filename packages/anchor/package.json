@@ -1,0 +1,9 @@
+{
+  "name": "@tap/anchor",
+  "private": true,
+  "version": "0.0.0",
+  "description": "RFC 3161 and OpenTimestamps clients and token verification.",
+  "author": "Abdullah Nawaz",
+  "license": "MIT",
+  "type": "module"
+}

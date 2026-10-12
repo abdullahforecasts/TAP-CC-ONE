@@ -1,0 +1,17 @@
+{
+  "id": "100",
+  "title": "One byte flipped inside a block",
+  "description": "A single byte in the middle of the first record block of vector 002 is changed. The block checksum fails.",
+  "verdict": "NOT_INTACT",
+  "findings": [
+    {
+      "code": "BAD_CRC",
+      "severity": "fail",
+      "offset": 153
+    }
+  ],
+  "recordCount": 0,
+  "finalFiles": [],
+  "composition": null,
+  "submittedPaths": []
+}

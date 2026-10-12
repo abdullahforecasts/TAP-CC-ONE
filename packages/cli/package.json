@@ -1,0 +1,9 @@
+{
+  "name": "tap-verify",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Command-line verifier for batch checking a class of submissions.",
+  "author": "Abdullah Nawaz",
+  "license": "MIT",
+  "type": "module"
+}

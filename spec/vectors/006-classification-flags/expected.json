@@ -1,0 +1,44 @@
+{
+  "id": "006",
+  "title": "Typed, pasted, bulk, format-on-save and undo",
+  "description": "One file receives typed text, a paste from outside the workspace, a bulk insertion (completion), formatter edits during save, and an undo. Final-code composition attributes each region to its origin.",
+  "verdict": "INTACT_WITH_WARNINGS",
+  "findings": [
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    }
+  ],
+  "recordCount": 10,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "solve.py",
+      "length": 57,
+      "sha256": "ae528146f752a30d5d2d98aed0b389f0eaf8b49bcbbfeb5c989fe9706e64cef9"
+    }
+  ],
+  "composition": {
+    "chars": 57,
+    "nonWs": 47,
+    "byOrigin": {
+      "typed": {
+        "chars": 14,
+        "nonWs": 12
+      },
+      "paste": {
+        "chars": 25,
+        "nonWs": 19
+      },
+      "format": {
+        "chars": 1,
+        "nonWs": 0
+      },
+      "bulk": {
+        "chars": 17,
+        "nonWs": 16
+      }
+    }
+  },
+  "submittedPaths": []
+}

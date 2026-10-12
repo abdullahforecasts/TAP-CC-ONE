@@ -1,0 +1,38 @@
+{
+  "id": "005",
+  "title": "Multi-cursor edit in sequential order",
+  "description": "Three cursors insert \"// \" at the start of three lines in one editor event. The changes are stored in descending-offset order with the MULTI_CURSOR flag, so applying them one by one reproduces the editor result.",
+  "verdict": "INTACT_WITH_WARNINGS",
+  "findings": [
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    }
+  ],
+  "recordCount": 6,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "a.js",
+      "length": 24,
+      "sha256": "79b5bf9cac1a605445d2946c69c0f84eb23eb7821fee079d0c2e61abac7bd0a8"
+    }
+  ],
+  "composition": {
+    "chars": 24,
+    "nonWs": 18,
+    "byOrigin": {
+      "typed": {
+        "chars": 9,
+        "nonWs": 6
+      },
+      "preexisting": {
+        "chars": 15,
+        "nonWs": 12
+      }
+    }
+  },
+  "submittedPaths": [
+    "a.js"
+  ]
+}

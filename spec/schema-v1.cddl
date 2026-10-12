@@ -1,0 +1,127 @@
+; TAP-CC-ONE log format v1 — CDDL schema (RFC 8610)
+; Author: Abdullah Nawaz. Normative text: log-format-v1.md.
+; Deterministic encoding (RFC 8949 §4.2.1) is required for every item.
+
+; ---------- Header ----------
+header = {
+  fmt: 1,
+  logId: bstr .size 16,
+  created: uint,
+  tool: tstr .size (1..800),          ; 1..200 characters
+  hash: "sha-256",
+  sig: "ed25519",
+  ? label: tstr,                      ; <= 200 characters
+}
+
+; ---------- Record envelope ----------
+record = {
+  s: uint,
+  k: kind,
+  t: uint,
+  m: uint,
+  p: hash32,
+  b: body,
+}
+
+hash32 = bstr .size 32
+fileId = uint
+relPath = tstr        ; '/' separators, no '.', '..', empty segments, leading '/', '\', NUL or drive letter
+
+kind = &(
+  SESSION_START: 1, SESSION_END: 2, FILE_SNAPSHOT: 3, EDIT_BATCH: 4,
+  SAVE: 5, FILE_OP: 6, EXTERNAL_CHANGE: 7, RUN_START: 8, RUN_END: 9,
+  FOCUS: 10, PAUSE: 11, RESUME: 12, CHECKPOINT: 13, ANCHOR: 14,
+  RECOVERY: 15, NOTE: 16, KEY_ROTATION: 17, CLOCK_ANOMALY: 18, ENV_CHANGE: 19
+)
+
+; The body type is selected by k. Unknown body keys are ignored (forward compatibility).
+body = session-start / session-end / file-snapshot / edit-batch / save /
+       file-op / external-change / run-start / run-end / focus / pause /
+       resume / checkpoint / anchor / recovery / note / key-rotation /
+       clock-anomaly / env-change
+
+value = uint / nint / tstr / bstr / bool / [* value] / { * tstr => value }
+
+session-start = {
+  sid: bstr .size 16,
+  pub: bstr .size 32,
+  vsc: tstr,
+  app: tstr,
+  os: tstr,
+  ext: tstr,
+  aiExt: [* tstr],
+  liveShare: bool,
+  cfgHash: hash32,
+  ? settings: { * tstr => value },
+  * tstr => value,
+}
+session-end = { sid: bstr .size 16, reason: "close" / "reload" / "deactivate", * tstr => value }
+
+snapshot-origin = "preexisting" / "created" / "external" / "resync" / "paused-gap" / "periodic"
+file-snapshot = {
+  f: fileId,
+  path: relPath,
+  origin: snapshot-origin,
+  text: tstr,
+  h: hash32,                          ; SHA-256(UTF-8(normalise(text)))
+  eol: "lf" / "crlf",
+  enc: tstr,
+  * tstr => value,
+}
+
+; flags: present only when non-zero; UNDO(0x01)/REDO(0x02) and PASTE(0x04)/BULK(0x08) exclusive;
+; LARGE(0x40) set exactly when ins exceeds 262144 UTF-16 code units.
+change = [dt: uint, off: uint, del: uint, ins: tstr, ? flags: 1..255]
+edit-batch = { f: fileId, c: [+ change], * tstr => value }
+
+save = { f: fileId, h: hash32, n: uint, * tstr => value }
+
+file-op = {
+  op: "create" / "delete" / "rename",
+  f: fileId,
+  path: relPath,
+  ? newPath: relPath,                 ; required for rename, forbidden otherwise
+  origin: "editor" / "external" / "fromUntitled",
+  * tstr => value,
+}
+
+external-change = { f: fileId, h: hash32, ? hint: "vcs", * tstr => value }
+
+run-start = {
+  rid: uint,
+  kind: "debug" / "task" / "terminal",
+  ? name: tstr,
+  ? cmd: tstr,
+  ? cwd: relPath,
+  * tstr => value,
+}
+run-end = { rid: uint, ? exit: int, * tstr => value }
+
+focus  = { on: bool, * tstr => value }
+pause  = { ? why: tstr, * tstr => value }
+resume = { * tstr => value }
+
+checkpoint = { state: hash32, files: uint, sig: bstr .size 64, * tstr => value }
+
+anchor = {
+  ck: uint,                           ; sequence number of an earlier CHECKPOINT
+  d: hash32,                          ; H(that checkpoint record)
+  type: "rfc3161" / "ots",
+  src: tstr,
+  tok: bstr,
+  status: "complete" / "pending" / "upgraded",
+  * tstr => value,
+}
+
+recovery = { lostBytes: uint, quarantineHash: hash32, atOffset: uint, * tstr => value }
+note = { text: tstr, * tstr => value }  ; 1..2000 code points
+key-rotation = { ? oldPub: bstr .size 32, newPub: bstr .size 32, why: "lost" / "manual", * tstr => value }
+clock-anomaly = { wallDelta: int, monoDelta: uint, * tstr => value }
+env-change = {
+  ? vsc: tstr,
+  ? aiExt: [* tstr],
+  ? liveShare: bool,
+  ? cfgHash: hash32,
+  ? settings: { * tstr => value },
+  * tstr => value,
+}

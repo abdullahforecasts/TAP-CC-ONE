@@ -1,0 +1,17 @@
+{
+  "id": "104",
+  "title": "Block whose raw_len lies (decompression bomb)",
+  "description": "A block declares raw_len = 200 but its deflate payload expands to 1 MiB. The parser stops at raw_len + 1 bytes and rejects the block without allocating more.",
+  "verdict": "NOT_INTACT",
+  "findings": [
+    {
+      "code": "RAW_LEN_MISMATCH",
+      "severity": "fail",
+      "offset": 152
+    }
+  ],
+  "recordCount": 0,
+  "finalFiles": [],
+  "composition": null,
+  "submittedPaths": []
+}

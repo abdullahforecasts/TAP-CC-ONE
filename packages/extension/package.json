@@ -1,0 +1,9 @@
+{
+  "name": "tap-cc-one",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The VS Code extension: records authorship history and opens the read-only viewer.",
+  "author": "Abdullah Nawaz",
+  "license": "MIT",
+  "type": "module"
+}

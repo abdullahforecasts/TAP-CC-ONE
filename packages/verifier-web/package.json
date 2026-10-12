@@ -1,0 +1,9 @@
+{
+  "name": "@tap/verifier-web",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Static web verifier for teachers (GitHub Pages). Runs entirely in the browser.",
+  "author": "Abdullah Nawaz",
+  "license": "MIT",
+  "type": "module"
+}

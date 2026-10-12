@@ -1,0 +1,33 @@
+{
+  "id": "105",
+  "title": "Submitted code differs by one character",
+  "description": "The log of vector 002 is intact, but the submitted main.cpp returns 1 instead of 0.",
+  "verdict": "NOT_INTACT",
+  "findings": [
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    },
+    {
+      "code": "SUBMISSION_MISMATCH",
+      "severity": "fail"
+    }
+  ],
+  "recordCount": 10,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "main.cpp",
+      "length": 69,
+      "sha256": "b2cdf865d5d82e3939ff66b82af8bdbe5745e7ee786fc3aec7d2249e3e141b29"
+    }
+  ],
+  "composition": {
+    "chars": 0,
+    "nonWs": 0,
+    "byOrigin": {}
+  },
+  "submittedPaths": [
+    "main.cpp"
+  ]
+}

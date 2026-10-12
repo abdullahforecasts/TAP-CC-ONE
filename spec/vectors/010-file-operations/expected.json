@@ -1,0 +1,34 @@
+{
+  "id": "010",
+  "title": "Create, rename and delete files",
+  "description": "a.py is created and typed, then renamed to b.py; c.py is created and deleted. Only b.py remains, and file ids are never reused.",
+  "verdict": "INTACT_WITH_WARNINGS",
+  "findings": [
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    }
+  ],
+  "recordCount": 10,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "src/b.py",
+      "length": 9,
+      "sha256": "cc42155088fca5730758db72b2a5bca33112a941dfaa2d43098ec422ce4ea213"
+    }
+  ],
+  "composition": {
+    "chars": 9,
+    "nonWs": 8,
+    "byOrigin": {
+      "typed": {
+        "chars": 9,
+        "nonWs": 8
+      }
+    }
+  },
+  "submittedPaths": [
+    "src\\b.py"
+  ]
+}

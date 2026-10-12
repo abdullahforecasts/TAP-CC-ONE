@@ -1,0 +1,46 @@
+{
+  "id": "007",
+  "title": "Paste of code that already exists in the workspace",
+  "description": "A helper function from utils.cpp is copied into main.cpp. Because the pasted text already exists in the workspace, it is attributed to internal-copy rather than paste.",
+  "verdict": "INTACT_WITH_WARNINGS",
+  "findings": [
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    }
+  ],
+  "recordCount": 8,
+  "finalFiles": [
+    {
+      "f": 1,
+      "path": "main.cpp",
+      "length": 50,
+      "sha256": "dbd64b2ffae88956d6813831e3ca438befce9861b7f0b7e99264acf619324546"
+    },
+    {
+      "f": 0,
+      "path": "utils.cpp",
+      "length": 42,
+      "sha256": "b4274416212cd1e114c57733d1d3194c35ad982d9346604ac20265c6710c6767"
+    }
+  ],
+  "composition": {
+    "chars": 92,
+    "nonWs": 64,
+    "byOrigin": {
+      "typed": {
+        "chars": 8,
+        "nonWs": 6
+      },
+      "internal-copy": {
+        "chars": 42,
+        "nonWs": 29
+      },
+      "preexisting": {
+        "chars": 42,
+        "nonWs": 29
+      }
+    }
+  },
+  "submittedPaths": []
+}

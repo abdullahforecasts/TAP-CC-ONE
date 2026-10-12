@@ -1,0 +1,419 @@
+import { bytesEqual, concatBytes } from './bytes.js';
+import { encodeCanonical } from './cbor.js';
+import { DS_STATE, Flag, Kind, MAX_FILES } from './constants.js';
+import { ds, sha256 } from './hash.js';
+import { comparePaths } from './paths.js';
+import {
+  addToComposition,
+  type Composition,
+  emptyComposition,
+  type Origin,
+  originFromFlags,
+  SpanList,
+} from './provenance.js';
+import type { AnyRecord, FileSnapshotBody, SnapshotOrigin } from './records.js';
+import { contentHash, detectEol, normalizeText } from './text.js';
+
+export type Severity = 'fail' | 'warn' | 'info';
+
+export interface ReplayIssue {
+  code: string;
+  severity: Severity;
+  message: string;
+  seq: number;
+}
+
+export interface FileState {
+  f: number;
+  path: string;
+  text: string;
+  /** Present when provenance tracking is enabled. */
+  spans?: SpanList;
+}
+
+export interface ReplayerOptions {
+  /** Track per-character origins (needed for composition). Default false. */
+  provenance?: boolean;
+}
+
+/** Plain copy of replay state, used for checkpoint caching and seeking. */
+export interface ReplaySnapshot {
+  /** Sequence number of the last applied record (-1 = nothing applied). */
+  seq: number;
+  files: Array<{ f: number; path: string; text: string; spans?: SpanList }>;
+  retired: number[];
+}
+
+const DS_STATE_BYTES = ds(DS_STATE);
+
+const SNAPSHOT_PROVENANCE: Record<SnapshotOrigin, Origin> = {
+  preexisting: 'preexisting',
+  created: 'created',
+  external: 'external',
+  resync: 'resync',
+  'paused-gap': 'paused-gap',
+  periodic: 'resync',
+};
+
+/**
+ * State digest over live files (spec §6.3):
+ *   entries = [[path, f, SHA-256(utf8(normalize(text)))], ...] sorted by UTF-8 bytes of path
+ *   state   = SHA-256(DS("CLG1/state") || canonical(entries))
+ */
+export function stateDigest(files: Iterable<{ f: number; path: string; text: string }>): Uint8Array {
+  const entries = [...files]
+    .sort((a, b) => comparePaths(a.path, b.path))
+    .map((file) => [file.path, file.f, contentHash(file.text)]);
+  return sha256(concatBytes(DS_STATE_BYTES, encodeCanonical(entries)));
+}
+
+/**
+ * Deterministic replay of a log (design §10). `apply` never throws for content problems; it
+ * returns issues instead, so a verifier can report them and a writer can refuse them.
+ */
+export class Replayer {
+  readonly files = new Map<number, FileState>();
+  readonly retired = new Set<number>();
+  private readonly pendingExternal = new Map<number, { h: Uint8Array; seq: number }>();
+  private readonly provenance: boolean;
+  lastSeq = -1;
+
+  constructor(options: ReplayerOptions = {}) {
+    this.provenance = options.provenance ?? false;
+  }
+
+  static fromSnapshot(snapshot: ReplaySnapshot, options: ReplayerOptions = {}): Replayer {
+    const r = new Replayer(options);
+    for (const file of snapshot.files) {
+      const state: FileState = { f: file.f, path: file.path, text: file.text };
+      if (r.provenance) state.spans = file.spans?.clone() ?? SpanList.of(file.text.length, 'resync', -1);
+      r.files.set(file.f, state);
+    }
+    for (const f of snapshot.retired) r.retired.add(f);
+    r.lastSeq = snapshot.seq;
+    return r;
+  }
+
+  snapshot(): ReplaySnapshot {
+    return {
+      seq: this.lastSeq,
+      files: [...this.files.values()].map((file) => {
+        const copy: ReplaySnapshot['files'][number] = { f: file.f, path: file.path, text: file.text };
+        if (file.spans) copy.spans = file.spans.clone();
+        return copy;
+      }),
+      retired: [...this.retired],
+    };
+  }
+
+  /** Live files sorted by path. */
+  liveFiles(): FileState[] {
+    return [...this.files.values()].sort((a, b) => comparePaths(a.path, b.path));
+  }
+
+  fileByPath(path: string): FileState | undefined {
+    for (const file of this.files.values()) if (file.path === path) return file;
+    return undefined;
+  }
+
+  stateDigest(): Uint8Array {
+    return stateDigest(this.files.values());
+  }
+
+  /** Composition of the given files (default: all live files). Requires provenance tracking. */
+  composition(paths?: readonly string[]): Composition {
+    if (!this.provenance) throw new Error('composition requires provenance tracking');
+    const total = emptyComposition();
+    for (const file of this.liveFiles()) {
+      if (paths && !paths.includes(file.path)) continue;
+      addToComposition(total, file.text, file.spans!);
+    }
+    return total;
+  }
+
+  /** Issues that can only be detected at the end of the log. */
+  finish(): ReplayIssue[] {
+    return [...this.pendingExternal.entries()].map(([f, { seq }]) => ({
+      code: 'EXTERNAL_WITHOUT_SNAPSHOT',
+      severity: 'warn' as const,
+      message: `external change to file ${f} was never followed by a snapshot`,
+      seq,
+    }));
+  }
+
+  apply(rec: AnyRecord): ReplayIssue[] {
+    const issues: ReplayIssue[] = [];
+    const issue = (code: string, severity: Severity, message: string) =>
+      issues.push({ code, severity, message, seq: rec.s });
+    this.lastSeq = rec.s;
+
+    switch (rec.k) {
+      case Kind.FILE_SNAPSHOT:
+        this.applySnapshot(rec.b, rec.s, issue);
+        break;
+
+      case Kind.EDIT_BATCH: {
+        const file = this.liveFile(rec.b.f, issue);
+        if (!file) break;
+        // Bounds-check the whole batch first so a bad batch leaves the state untouched.
+        let len = file.text.length;
+        let bad = -1;
+        for (let i = 0; i < rec.b.c.length && bad < 0; i++) {
+          const [, off, del, ins] = rec.b.c[i]!;
+          if (off + del > len) bad = i;
+          else len += ins.length - del;
+        }
+        if (bad >= 0) {
+          const [, off, del] = rec.b.c[bad]!;
+          issue('EDIT_OUT_OF_BOUNDS', 'fail', `change #${bad} (${off}+${del}) falls outside ${file.path}`);
+          break;
+        }
+        for (const [, off, del, ins, flags = 0] of rec.b.c) {
+          if (file.spans) {
+            const internal = ins.length > 0 && (flags & Flag.PASTE) !== 0 && this.existsInWorkspace(ins);
+            file.spans.remove(off, del);
+            file.spans.insert(off, ins.length, originFromFlags(flags, internal), rec.s);
+          }
+          file.text = file.text.slice(0, off) + ins + file.text.slice(off + del);
+        }
+        break;
+      }
+
+      case Kind.SAVE: {
+        const file = this.liveFile(rec.b.f, issue);
+        if (!file) break;
+        if (!bytesEqual(contentHash(file.text), rec.b.h)) {
+          issue(
+            'SAVE_HASH_MISMATCH',
+            'fail',
+            `saved content of ${file.path} does not match the replayed text`,
+          );
+        } else if (file.text.length !== rec.b.n) {
+          issue(
+            'SAVE_LENGTH_MISMATCH',
+            'fail',
+            `${file.path}: length ${file.text.length}, SAVE says ${rec.b.n}`,
+          );
+        }
+        break;
+      }
+
+      case Kind.FILE_OP: {
+        const b = rec.b;
+        if (b.op === 'create') {
+          if (this.files.has(b.f) || this.retired.has(b.f)) {
+            issue('FILE_ID_REUSED', 'fail', `file id ${b.f} is already in use`);
+            break;
+          }
+          if (!this.checkNewPath(b.path, issue)) break;
+          this.addFile(b.f, b.path, '', 'created', rec.s);
+          if (b.origin === 'external')
+            issue('EXTERNAL_FILE_CREATED', 'info', `${b.path} created outside the editor`);
+          break;
+        }
+        const file = this.liveFile(b.f, issue);
+        if (!file) break;
+        if (file.path !== b.path) {
+          issue('OP_PATH_MISMATCH', 'fail', `FILE_OP says ${b.path}, file ${b.f} is ${file.path}`);
+          break;
+        }
+        if (b.op === 'delete') {
+          this.files.delete(b.f);
+          this.retired.add(b.f);
+          this.pendingExternal.delete(b.f);
+        } else {
+          if (!this.checkNewPath(b.newPath!, issue)) break;
+          file.path = b.newPath!;
+        }
+        break;
+      }
+
+      case Kind.EXTERNAL_CHANGE: {
+        const file = this.liveFile(rec.b.f, issue);
+        if (!file) break;
+        this.pendingExternal.set(rec.b.f, { h: rec.b.h, seq: rec.s });
+        if (rec.b.hint === 'vcs')
+          issue('VCS_OPERATION', 'info', `${file.path} changed by a version-control operation`);
+        break;
+      }
+
+      default:
+        // Other kinds do not change file state.
+        break;
+    }
+    return issues;
+  }
+
+  private liveFile(
+    f: number,
+    issue: (code: string, severity: Severity, message: string) => void,
+  ): FileState | undefined {
+    const file = this.files.get(f);
+    if (!file) {
+      issue(
+        this.retired.has(f) ? 'FILE_DELETED' : 'UNKNOWN_FILE',
+        'fail',
+        this.retired.has(f) ? `file ${f} was deleted earlier` : `file id ${f} has not been introduced`,
+      );
+    }
+    return file;
+  }
+
+  private checkNewPath(
+    path: string,
+    issue: (code: string, severity: Severity, message: string) => void,
+  ): boolean {
+    if (this.fileByPath(path)) {
+      issue('DUPLICATE_PATH', 'fail', `two live files would share the path ${path}`);
+      return false;
+    }
+    if (this.files.size >= MAX_FILES) {
+      issue('TOO_MANY_FILES', 'fail', `more than ${MAX_FILES} files`);
+      return false;
+    }
+    return true;
+  }
+
+  private addFile(f: number, path: string, text: string, origin: Origin, seq: number): void {
+    const state: FileState = { f, path, text };
+    if (this.provenance) state.spans = SpanList.of(text.length, origin, seq);
+    this.files.set(f, state);
+  }
+
+  /** Whether `text` (EOL-normalised) already exists in any live file: a copy within the workspace. */
+  private existsInWorkspace(text: string): boolean {
+    const needle = normalizeText(text);
+    if (needle.trim().length === 0) return false;
+    for (const file of this.files.values()) if (normalizeText(file.text).includes(needle)) return true;
+    return false;
+  }
+
+  private applySnapshot(
+    b: FileSnapshotBody,
+    seq: number,
+    issue: (code: string, severity: Severity, message: string) => void,
+  ): void {
+    if (!bytesEqual(contentHash(b.text), b.h)) {
+      issue('SNAPSHOT_HASH_MISMATCH', 'fail', `snapshot of ${b.path} has a wrong content hash`);
+      return;
+    }
+    if (detectEol(b.text) !== b.eol) {
+      issue('SNAPSHOT_EOL_MISMATCH', 'warn', `snapshot of ${b.path} declares eol=${b.eol}`);
+    }
+    const existing = this.files.get(b.f);
+    if (!existing) {
+      if (this.retired.has(b.f)) {
+        issue('FILE_ID_REUSED', 'fail', `file id ${b.f} was deleted earlier and cannot be reused`);
+        return;
+      }
+      if (b.origin === 'resync' || b.origin === 'periodic') {
+        issue('SNAPSHOT_ORIGIN_INVALID', 'fail', `"${b.origin}" snapshot for unknown file ${b.f}`);
+        return;
+      }
+      if (!this.checkNewPath(b.path, issue)) return;
+      this.addFile(b.f, b.path, b.text, SNAPSHOT_PROVENANCE[b.origin], seq);
+      if (b.origin === 'external') issue('EXTERNAL_FILE', 'info', `${b.path} appeared outside the editor`);
+      if (b.origin === 'paused-gap')
+        issue('PAUSED_GAP_CHANGES', 'warn', `${b.path} was created while paused`);
+      return;
+    }
+
+    if (existing.path !== b.path) {
+      issue('SNAPSHOT_PATH_MISMATCH', 'fail', `snapshot says ${b.path}, file ${b.f} is ${existing.path}`);
+      return;
+    }
+    if (b.origin === 'preexisting' || (b.origin === 'created' && existing.text !== '')) {
+      issue('SNAPSHOT_ORIGIN_INVALID', 'fail', `"${b.origin}" snapshot for already-known file ${b.path}`);
+      return;
+    }
+    const pending = this.pendingExternal.get(b.f);
+    if (b.origin === 'external' && pending) {
+      if (!bytesEqual(pending.h, b.h)) {
+        issue(
+          'EXTERNAL_HASH_MISMATCH',
+          'fail',
+          `external snapshot of ${b.path} does not match EXTERNAL_CHANGE`,
+        );
+        return;
+      }
+      this.pendingExternal.delete(b.f);
+    }
+    if (existing.text === b.text) return;
+
+    switch (b.origin) {
+      case 'external':
+        issue('EXTERNAL_CHANGE', 'info', `${b.path} was changed outside the editor`);
+        break;
+      case 'resync':
+        issue('RESYNC', 'warn', `recorder re-synchronised ${b.path} (some edits were not captured)`);
+        break;
+      case 'paused-gap':
+        issue('PAUSED_GAP_CHANGES', 'warn', `${b.path} changed while recording was paused`);
+        break;
+      case 'periodic':
+        issue('PERIODIC_SNAPSHOT_DIVERGED', 'warn', `periodic snapshot of ${b.path} differs from replay`);
+        break;
+      default:
+        break;
+    }
+    // Replace only the region that differs, so unchanged code keeps its origin.
+    const old = existing.text;
+    let prefix = 0;
+    const maxPrefix = Math.min(old.length, b.text.length);
+    while (prefix < maxPrefix && old.charCodeAt(prefix) === b.text.charCodeAt(prefix)) prefix++;
+    let suffix = 0;
+    const maxSuffix = Math.min(old.length, b.text.length) - prefix;
+    while (
+      suffix < maxSuffix &&
+      old.charCodeAt(old.length - 1 - suffix) === b.text.charCodeAt(b.text.length - 1 - suffix)
+    ) {
+      suffix++;
+    }
+    if (existing.spans) {
+      existing.spans.remove(prefix, old.length - prefix - suffix);
+      existing.spans.insert(prefix, b.text.length - prefix - suffix, SNAPSHOT_PROVENANCE[b.origin], seq);
+    }
+    existing.text = b.text;
+  }
+}
+
+/**
+ * Checkpoint-cached index over a replay, for random access (the viewer's scrubber).
+ * Caches the state after every CHECKPOINT and at least every `interval` records.
+ */
+export class ReplayIndex {
+  private readonly cache: ReplaySnapshot[] = [];
+
+  constructor(
+    private readonly records: readonly AnyRecord[],
+    private readonly interval = 1000,
+  ) {
+    const r = new Replayer();
+    let sinceCache = 0;
+    this.cache.push(r.snapshot());
+    for (const rec of records) {
+      r.apply(rec);
+      sinceCache++;
+      if (rec.k === Kind.CHECKPOINT || sinceCache >= this.interval) {
+        this.cache.push(r.snapshot());
+        sinceCache = 0;
+      }
+    }
+  }
+
+  get cachedPoints(): number {
+    return this.cache.length;
+  }
+
+  /** State after applying every record with sequence number <= seq. */
+  stateAt(seq: number): Replayer {
+    let base = this.cache[0]!;
+    for (const snap of this.cache) {
+      if (snap.seq <= seq) base = snap;
+      else break;
+    }
+    const r = Replayer.fromSnapshot(base);
+    for (let i = base.seq + 1; i <= seq && i < this.records.length; i++) r.apply(this.records[i]!);
+    return r;
+  }
+}

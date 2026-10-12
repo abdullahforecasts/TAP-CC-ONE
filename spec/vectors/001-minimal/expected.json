@@ -1,0 +1,24 @@
+{
+  "id": "001",
+  "title": "Minimal log",
+  "description": "Header, SESSION_START and SESSION_END only. No checkpoints and no anchors.",
+  "verdict": "INTACT_WITH_WARNINGS",
+  "findings": [
+    {
+      "code": "NO_CHECKPOINTS",
+      "severity": "warn"
+    },
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    }
+  ],
+  "recordCount": 2,
+  "finalFiles": [],
+  "composition": {
+    "chars": 0,
+    "nonWs": 0,
+    "byOrigin": {}
+  },
+  "submittedPaths": []
+}

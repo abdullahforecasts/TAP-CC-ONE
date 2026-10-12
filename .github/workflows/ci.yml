@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit, property and conformance tests (with coverage)
+        run: pnpm test:coverage
+      - name: Build
+        run: pnpm build
+      - name: Core must bundle for browsers (no Node-only APIs)
+        run: pnpm build:browser-check
+      - name: Vectors are deterministic and up to date
+        run: pnpm vectors:check
+      - name: Performance budgets
+        run: pnpm bench --assert
+      - name: Short fuzz run
+        run: pnpm fuzz --seconds 30

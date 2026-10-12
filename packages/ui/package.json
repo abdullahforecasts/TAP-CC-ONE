@@ -1,0 +1,9 @@
+{
+  "name": "@tap/ui",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Shared Preact components: Save History, replay player, timeline, integrity checklist, report.",
+  "author": "Abdullah Nawaz",
+  "license": "MIT",
+  "type": "module"
+}

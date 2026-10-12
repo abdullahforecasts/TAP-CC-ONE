@@ -1,0 +1,34 @@
+{
+  "id": "004",
+  "title": "Emoji and astral characters",
+  "description": "Characters outside the Basic Multilingual Plane occupy two UTF-16 code units. They are inserted, deleted (del = 2) and replaced.",
+  "verdict": "INTACT_WITH_WARNINGS",
+  "findings": [
+    {
+      "code": "NO_ANCHORS",
+      "severity": "warn"
+    }
+  ],
+  "recordCount": 8,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "unicode.py",
+      "length": 24,
+      "sha256": "38ac4e7f43ac09656dc28a7d52d42a7d277dbf93c207a0bd044f888d7e63d105"
+    }
+  ],
+  "composition": {
+    "chars": 24,
+    "nonWs": 20,
+    "byOrigin": {
+      "typed": {
+        "chars": 24,
+        "nonWs": 20
+      }
+    }
+  },
+  "submittedPaths": [
+    "unicode.py"
+  ]
+}
