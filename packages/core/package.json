@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "TAP-CC-ONE core: log format, hash chain, signatures, replay, provenance and verification.",
   "author": "Abdullah Nawaz",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",

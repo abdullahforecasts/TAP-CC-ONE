@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- License changed from MIT to the PolyForm Noncommercial License 1.0.0: free for students, teachers, universities, research and personal use; commercial use needs a licence from the author. The log format specification in `spec/` stays MIT.
+
 ## 0.2.0 — Part 3: viewer (development build)
 
 - **TAP: View Log** opens a read-only viewer: Save History with line diffs, runs and how the code arrived; replay of any file or any save interval (1×–64×, skip idle time) with origin highlighting; timeline; composition per file; events list; "About this log".

@@ -4,6 +4,6 @@
   "version": "0.0.0",
   "description": "Static web verifier for teachers (GitHub Pages). Runs entirely in the browser.",
   "author": "Abdullah Nawaz",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module"
 }

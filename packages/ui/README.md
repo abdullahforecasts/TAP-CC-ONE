@@ -10,4 +10,4 @@ and "About this log", plus the integrity checklist. Preact + signals, CodeMirror
   VS Code extension shows them in a webview; any static page can host them too.
 - `pnpm e2e` — Playwright tests of the built bundle under the webview's content security policy.
 
-Author: Abdullah Nawaz · MIT
+Author: Abdullah Nawaz · PolyForm Noncommercial 1.0.0 (commercial use by agreement)

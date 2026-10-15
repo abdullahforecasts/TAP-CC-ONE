@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "description": "TAP-CC-ONE viewer: Save History, replay player, timeline, integrity checklist, composition.",
   "author": "Abdullah Nawaz",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "sideEffects": [
     "*.css"

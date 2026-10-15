@@ -2,7 +2,7 @@
 
 Core library of TAP-CC-ONE: the `.codelog` format, hash chain, Ed25519 checkpoints, deterministic replay, per-character provenance and verification. It runs unchanged in Node, browsers and VS Code webviews: no Node-only APIs and no native modules.
 
-**Author:** Abdullah Nawaz · **License:** MIT · **Spec:** [`spec/log-format-v1.md`](../../spec/log-format-v1.md)
+**Author:** Abdullah Nawaz · **License:** PolyForm Noncommercial 1.0.0 (commercial use by agreement) · **Spec:** [`spec/log-format-v1.md`](../../spec/log-format-v1.md)
 
 ## Modules
 

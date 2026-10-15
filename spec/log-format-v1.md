@@ -4,6 +4,7 @@
 |---|---|
 | **Status** | Draft. Frozen at extension release 1.0; until then it may change, always together with the test vectors. |
 | **Author** | Abdullah Nawaz |
+| **License** | MIT (this folder only, see `spec/LICENSE`) |
 | **Reference implementation** | `packages/core` (`@tap/core`) |
 | **Conformance** | `spec/vectors/`: an implementation conforms when it produces the expected result for every vector |
 

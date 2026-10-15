@@ -2,7 +2,7 @@
  * @tap/core — TAP-CC-ONE log format, hash chain, signatures, replay, provenance and verification.
  * Runs unchanged in Node and in browsers (no Node-only APIs, no native modules).
  *
- * Author: Abdullah Nawaz. License: MIT.
+ * Author: Abdullah Nawaz. License: PolyForm Noncommercial 1.0.0.
  */
 export * from './bytes.js';
 export * from './cbor.js';

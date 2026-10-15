@@ -2,7 +2,7 @@
 
 Records a tamper-evident history of how your code was written, so you can show that your work is your own if a plagiarism or AI-use question ever comes up.
 
-**Author:** Abdullah Nawaz · **License:** MIT · **Source:** [github.com/abdullahforecasts/TAP-CC-ONE](https://github.com/abdullahforecasts/TAP-CC-ONE)
+**Author:** Abdullah Nawaz · **License:** PolyForm Noncommercial 1.0.0 (commercial use by agreement) · **Source:** [github.com/abdullahforecasts/TAP-CC-ONE](https://github.com/abdullahforecasts/TAP-CC-ONE)
 
 > Status: 0.2.0, development build (Part 3 of the plan). Timestamps from third-party services and the teacher's verifier arrive in the next releases.
 

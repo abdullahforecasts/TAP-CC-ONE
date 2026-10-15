@@ -2,7 +2,7 @@
 
 A VS Code extension that records a tamper-evident, independently timestamped history of how code was written. Students attach this history to their submissions so they can counter false plagiarism or AI-use allegations.
 
-**Author:** Abdullah Nawaz · **License:** MIT
+**Author:** Abdullah Nawaz · **License:** [PolyForm Noncommercial 1.0.0](LICENSE) (free for education, research and personal use; [commercial use](#license) by agreement)
 
 ## Status
 
@@ -97,3 +97,13 @@ const report = verifyLog(bytes);    // { verdict, findings, finalFiles, composit
 ```
 
 The writer does no I/O, replays everything it appends (so `log.state` is exactly what a verifier will reconstruct), and refuses records that would not replay.
+
+## License
+
+The code is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+- **Free** for noncommercial use: students, teachers, schools and universities, research, and personal projects.
+- **Commercial use** (for example a company, a paid course or proctoring platform, or a product that includes this code) needs a separate commercial licence. Contact Abdullah Nawaz at abdullahforecasts@gmail.com.
+- The **log format specification and test vectors** in [`spec/`](spec/) are under the [MIT License](spec/LICENSE), so any tool may read and verify TAP-CC-ONE logs.
+
+Versions published before this change (up to commit `f1d6530`) remain available under the MIT License.

@@ -1271,7 +1271,7 @@ The instructor publishes `tap-course.json`, containing the assignment id, the op
 ### 20.2 Open questions
 
 1. **Product name** and publisher ID for the Marketplace.
-2. **License:** MIT vs Apache-2.0. Open source is strongly recommended for trust in the verifier either way.
+2. **License:** decided: PolyForm Noncommercial 1.0.0 for the code (free for education, research and personal use; commercial use by separate licence), MIT for `spec/` so any tool can read and verify logs.
 3. **Defaults for focus and terminal command recording:** on (better evidence) or off (more privacy)?
 4. Should **unanchored logs** show a stronger warning by default, or is that institution policy (course config)?
 5. **OTS verification source:** which public block-header API to use, plus a fallback for pasting a header manually.

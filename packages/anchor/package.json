@@ -4,6 +4,6 @@
   "version": "0.0.0",
   "description": "RFC 3161 and OpenTimestamps clients and token verification.",
   "author": "Abdullah Nawaz",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module"
 }

@@ -4,6 +4,6 @@
   "version": "0.0.0",
   "description": "Command-line verifier for batch checking a class of submissions.",
   "author": "Abdullah Nawaz",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module"
 }

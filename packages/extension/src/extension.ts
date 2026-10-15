@@ -1,6 +1,6 @@
 /**
  * TAP-CC-ONE VS Code extension entry point.
- * Author: Abdullah Nawaz. License: MIT.
+ * Author: Abdullah Nawaz. License: PolyForm Noncommercial 1.0.0.
  */
 import type * as vscode from 'vscode';
 import { Controller } from './vscode/controller.js';

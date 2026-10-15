@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "description": "Tamper-evident, independently timestamped authorship logs for code written in VS Code.",
   "author": "Abdullah Nawaz",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "packageManager": "pnpm@10.28.0",
   "engines": {
