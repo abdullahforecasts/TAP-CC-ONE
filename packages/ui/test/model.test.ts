@@ -370,3 +370,59 @@ function countWs(stats: { insertedChars: number; byOrigin: Record<string, number
   const nonWs = Object.values(stats.byOrigin).reduce<number>((n, v) => n + (v ?? 0), 0);
   return stats.insertedChars - nonWs;
 }
+
+describe('runs cut off by the end of a session', () => {
+  it('shows a run that never reported a result as cut off, not running', () => {
+    const key = keyPairFromSeed(sha256(utf8('cut-off')));
+    const w = LogWriter.create({
+      created: DEMO_START,
+      tool: 'tap-ui-test',
+      logId: sha256(utf8('cut')).slice(0, 16),
+    });
+    let t = DEMO_START;
+    const at = (ms: number) => {
+      t += ms;
+      return { t, m: t - DEMO_START };
+    };
+    const session = (i: number) =>
+      w.append(
+        'SESSION_START',
+        {
+          sid: sha256(utf8(`s${i}`)).slice(0, 16),
+          pub: key.publicKey,
+          vsc: '1.105.0',
+          app: 'vscode',
+          os: 'linux',
+          ext: '0.2.0',
+          aiExt: [],
+          liveShare: false,
+          cfgHash: new Uint8Array(32),
+          settings: {},
+        },
+        at(1000),
+      );
+    session(1);
+    w.append('RUN_START', { rid: 1, kind: 'task', name: 'build' }, at(1000));
+    const lastOfFirst = t;
+    // The laptop dies: no RUN_END, no SESSION_END. Next day the recorder repairs the log and
+    // starts a new session, which reuses run id 1.
+    w.append('RECOVERY', { lostBytes: 7, quarantineHash: new Uint8Array(32), atOffset: 100 }, at(86_400_000));
+    session(2);
+    w.append('RUN_START', { rid: 1, kind: 'task', name: 'build' }, at(1000));
+    w.append('RUN_END', { rid: 1, exit: 0 }, at(1000));
+    const model = load(w.drain());
+    const runs = model.history.flatMap((h) => h.runs);
+    expect(runs.map((r) => [r.cutOff ?? false, r.exit])).toEqual([
+      [true, undefined],
+      [false, 0],
+    ]);
+    // The first session lasted until its last record, not until the recovery a day later.
+    expect(model.sessions[0]!.lastT).toBe(lastOfFirst);
+    expect(model.timeline.sessions[0]!.to).toBe(lastOfFirst);
+    expect(model.sessions[1]!.lastT).toBe(t);
+    expect(model.events.filter((e) => e.category === 'run').map((e) => e.detail)).toEqual([
+      'no result: the session ended before it finished',
+      'exit code 0',
+    ]);
+  });
+});

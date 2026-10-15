@@ -1,6 +1,6 @@
 import type { Origin } from '@tap/core';
 import { useMemo, useState } from 'preact/hooks';
-import { fmtCount, fmtDateTime, fmtDuration, fmtPct, fmtTime, ORIGIN_LABEL } from '../format.js';
+import { fmtCount, fmtDateTime, fmtDuration, fmtPct, fmtSpan, ORIGIN_LABEL } from '../format.js';
 import { diffTexts } from '../model/diff.js';
 import { frameAt } from '../model/playback.js';
 import type { HistoryEntry, IntervalStats, LogModel, RunInfo } from '../model/types.js';
@@ -34,7 +34,13 @@ export function pasteSummary(since: IntervalStats): string | undefined {
 function runText(run: RunInfo): string {
   const name = run.name ? ` "${run.name}"` : '';
   const result =
-    run.exit === undefined ? (run.endSeq === undefined ? 'running' : 'ended') : `exit ${run.exit}`;
+    run.exit === undefined
+      ? run.cutOff
+        ? 'no result (session ended)'
+        : run.endSeq === undefined
+          ? 'running'
+          : 'ended'
+      : `exit ${run.exit}`;
   return `${run.kind}${name}: ${result}`;
 }
 
@@ -104,7 +110,7 @@ function Entry({ entry, model, showPath }: { entry: HistoryEntry; model: LogMode
                 onClick={() => openReplay(track.f, entry.fromIndex!, entry.toIndex!, true)}
                 data-testid="replay-interval"
               >
-                ▶ Replay {fmtTime(fromT)} → {fmtTime(entry.t)}
+                ▶ Replay {fmtSpan(fromT, entry.t)}
               </button>
             )}
             {diff && diff.hunks.reduce((n, h) => n + h.lines.length, 0) > 60 && (

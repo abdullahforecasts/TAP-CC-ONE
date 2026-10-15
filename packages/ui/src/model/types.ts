@@ -48,6 +48,8 @@ export interface RunInfo {
   endSeq?: number;
   endT?: number;
   exit?: number;
+  /** The session ended (VS Code closed, crash) before the run reported a result. */
+  cutOff?: boolean;
 }
 
 export interface PasteInfo {
@@ -127,6 +129,8 @@ export interface SessionInfo {
   endSeq?: number;
   endT?: number;
   endReason?: string;
+  /** Time of the session's last record when it has no SESSION_END (crash, or still recording). */
+  lastT?: number;
   app: string;
   vsc: string;
   os: string;

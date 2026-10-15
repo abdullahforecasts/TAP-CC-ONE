@@ -8,11 +8,13 @@ import { openReplay } from '../store.js';
 const BREAK_MS = 10 * 60_000;
 const BREAK_PX = 22;
 const LABEL_W = 132;
+/** Room for one axis label ("10-12 20:05"). */
+const AXIS_LABEL_W = 84;
 const LANE_H = 22;
 
 const LANES = [
   { id: 'typing', label: 'Typing (per minute)' },
-  { id: 'paste', label: 'Pastes & bulk' },
+  { id: 'paste', label: 'Pastes & tool/AI' },
   { id: 'run', label: 'Runs' },
   { id: 'save', label: 'Saves' },
   { id: 'external', label: 'Outside the editor' },
@@ -94,6 +96,18 @@ export function Timeline({ model }: { model: LogModel }) {
   const maxChars = Math.max(1, ...tl.activity.map((b) => b.typed + b.pasted + b.bulk + b.other));
   const height = LANES.length * LANE_H + 40;
   const X = (t: number) => LABEL_W + axis.x(t);
+  // Label each segment with its start time unless that would overlap a neighbouring label. Going
+  // from the right keeps the latest day labelled; a label near the right edge ends at the edge.
+  const labelAt = new Map<number, { x: number; end: boolean }>();
+  let nextStart = Number.POSITIVE_INFINITY;
+  for (let i = axis.segments.length - 1; i >= 0; i--) {
+    const s = axis.segments[i]!;
+    const end = s.x + AXIS_LABEL_W > plotW;
+    const start = end ? plotW - AXIS_LABEL_W : s.x;
+    if (start + AXIS_LABEL_W + 8 > nextStart && i > 0) continue;
+    labelAt.set(i, { x: end ? plotW : s.x, end });
+    nextStart = start;
+  }
 
   const click = (m: Marker) => {
     if (m.f === undefined) return;
@@ -132,9 +146,16 @@ export function Timeline({ model }: { model: LogModel }) {
           ))}
           {axis.segments.map((s, i) => (
             <g key={`seg${i}`}>
-              <text class="axis-label" x={LABEL_W + s.x} y={12}>
-                {fmtDateTime(s.from).slice(5, 16)}
-              </text>
+              {labelAt.has(i) && (
+                <text
+                  class="axis-label"
+                  x={LABEL_W + labelAt.get(i)!.x}
+                  y={12}
+                  text-anchor={labelAt.get(i)!.end ? 'end' : 'start'}
+                >
+                  {fmtDateTime(s.from).slice(5, 16)}
+                </text>
+              )}
               {i > 0 && (
                 <g class="break">
                   <line

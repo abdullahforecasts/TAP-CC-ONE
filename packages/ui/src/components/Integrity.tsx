@@ -33,10 +33,17 @@ export const VERDICT_TEXT: Record<VerifyReport['verdict'], string> = {
 export function Integrity({
   report,
   comparedWith,
+  readable,
 }: {
   report: VerifyReport;
   comparedWith?: string | undefined;
+  /** Records and sessions the viewer could read (the verifier stops counting at damage). */
+  readable?: { records: number; sessions: number } | undefined;
 }) {
+  // When the file structure is damaged the verifier stops early; show what could still be read.
+  const records = Math.max(report.recordCount, readable?.records ?? 0);
+  const sessions = Math.max(report.stats.sessions, readable?.sessions ?? 0);
+  const partial = records > report.recordCount;
   const [open, setOpen] = useState(false);
   const verdictClass = report.verdict === 'INTACT' ? 'ok' : report.verdict === 'NOT_INTACT' ? 'bad' : 'warn';
   return (
@@ -46,8 +53,8 @@ export function Integrity({
           {VERDICT_TEXT[report.verdict]}
         </span>
         <span class="muted">
-          {report.recordCount.toLocaleString('en-US')} records · {report.stats.sessions} session
-          {report.stats.sessions === 1 ? '' : 's'}
+          {records.toLocaleString('en-US')} records{partial ? ' readable' : ''} · {sessions} session
+          {sessions === 1 ? '' : 's'}
           {report.stats.recoveries > 0 &&
             ` · ${report.stats.recoveries} recovered crash${report.stats.recoveries === 1 ? '' : 'es'}`}
           {report.stats.resyncs > 0 &&
@@ -61,7 +68,7 @@ export function Integrity({
         {ROWS.map(({ stage, label }) => {
           const { state, finding } = rowState(report.findings.filter((f) => f.stage === stage));
           const text =
-            stage === 'submission' && state === 'none'
+            stage === 'submission' && state === 'none' && !comparedWith
               ? 'No files to compare with'
               : (finding?.message ?? (state === 'none' ? 'Not checked' : ''));
           return (

@@ -24,6 +24,7 @@ import {
   type RecorderHost,
   type RecorderOptions,
   type RecorderSettings,
+  type SessionEnvironment,
 } from '../../src/recorder/recorder.js';
 import { resumeInfo } from '../../src/recorder/resumeInfo.js';
 
@@ -142,6 +143,8 @@ export interface SimOptions {
   existing?: Uint8Array;
   startPaused?: boolean;
   recovery?: RecorderOptions['recovery'];
+  /** Overrides parts of the session environment (editor version, AI extensions...). */
+  env?: Partial<SessionEnvironment>;
 }
 
 /** A recorder wired to a simulated editor, with helpers that behave like VS Code. */
@@ -184,6 +187,7 @@ export class Sim {
         liveShare: false,
         cfgHash: new Uint8Array(32),
         settings: { 'tap.record.focus': true },
+        ...options.env,
       },
       settings: { ...FAST, ...options.settings },
       diskHashes: info.diskHashes,

@@ -35,12 +35,15 @@
   --o-typed: var(--c-blue);
   --o-undo-redo: color-mix(in srgb, var(--c-blue) 45%, var(--bg));
   --o-format: color-mix(in srgb, var(--c-green) 60%, var(--bg));
-  --o-internal-copy: var(--c-purple);
-  --o-paste: var(--c-orange);
-  --o-bulk: var(--c-yellow);
+  /* Pasted from outside: red. Copied from the student's own files: yellow. Changed outside the
+     editor: orange. Inserted by a tool or AI (completions, agents): purple. */
+  /* A clear yellow, distinct from the orange of changes made outside the editor. */
+  --o-internal-copy: color-mix(in srgb, var(--c-yellow) 40%, #f5c400);
+  --o-paste: var(--c-red);
+  --o-bulk: var(--c-purple);
   --o-preexisting: var(--c-gray);
   --o-created: color-mix(in srgb, var(--c-gray) 60%, var(--c-blue));
-  --o-external: var(--c-red);
+  --o-external: var(--c-orange);
   --o-paused-gap: color-mix(in srgb, var(--c-red) 50%, var(--c-yellow));
   --o-resync: color-mix(in srgb, var(--c-red) 70%, var(--fg));
 }
@@ -703,7 +706,7 @@ td.path {
 }
 
 .event.notice .label {
-  color: var(--o-paste);
+  color: var(--c-orange);
 }
 
 .event.warning .label {

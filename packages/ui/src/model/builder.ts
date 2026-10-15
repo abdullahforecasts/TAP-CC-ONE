@@ -93,8 +93,9 @@ export class LogModelBuilder {
   private openSession: Range | undefined;
   private firstT: number | undefined;
   private lastT = 0;
-  /** Wall time of the previous record (the end of a session that crashed). */
-  private prevRecT = 0;
+  /** Time of the last record that belongs to a session (the end of one that crashed). A recovery
+   * record is written by the next session, so it is not counted. */
+  private sessionLastT = 0;
   private problem: string | undefined;
 
   constructor() {
@@ -132,13 +133,28 @@ export class LogModelBuilder {
     }
     this.afterApply(rec, existed);
     this.rec = undefined;
-    this.prevRecT = rec.t;
+    if (rec.k !== Kind.RECOVERY) this.sessionLastT = rec.t;
+  }
+
+  /** Runs still open when their session ends never get a result (closed VS Code, crash). */
+  private cutOffRuns(): void {
+    for (const [key, run] of this.runs) {
+      if (run.endSeq === undefined) {
+        run.cutOff = true;
+        const ev = this.runEvents.get(run);
+        if (ev) ev.detail = 'no result: the session ended before it finished';
+      }
+      this.runs.delete(key);
+    }
   }
 
   private afterApply(rec: AnyRecord, existed: boolean): void {
     switch (rec.k) {
       case Kind.SESSION_START: {
-        this.closeSession(this.prevRecT);
+        this.cutOffRuns();
+        const prev = this.sessions.at(-1);
+        if (prev && prev.endT === undefined) prev.lastT = this.sessionLastT;
+        this.closeSession(this.sessionLastT);
         const b = rec.b;
         const settings: Record<string, string | number | boolean> = {};
         for (const [k, v] of Object.entries(b.settings ?? {})) {
@@ -172,6 +188,7 @@ export class LogModelBuilder {
           session.endT = rec.t;
           session.endReason = rec.b.reason;
         }
+        this.cutOffRuns();
         this.closeSession(rec.t);
         this.event(rec, 'session', `Session ${session?.index ?? '?'} ended`, { detail: rec.b.reason });
         break;
@@ -414,7 +431,7 @@ export class LogModelBuilder {
       const lines = e.ins.split('\n').length;
       const what =
         e.origin === 'bulk'
-          ? 'Bulk insertion (completion, snippet or tool)'
+          ? 'Inserted by a tool or AI (completion, agent, snippet)'
           : e.origin === 'internal-copy'
             ? `Pasted a copy of code from ${e.copiedFrom ?? 'this workspace'}`
             : 'Pasted from outside the workspace';
@@ -539,6 +556,11 @@ export class LogModelBuilder {
   /** Snapshot of everything appended so far. */
   result(): LogModel {
     const end = this.lastT;
+    const open = this.sessions.at(-1);
+    const sessions =
+      open && open.endT === undefined
+        ? [...this.sessions.slice(0, -1), { ...open, lastT: this.sessionLastT }]
+        : this.sessions;
     const close = (open: Range | undefined, list: Range[]) => (open ? [...list, { ...open, to: end }] : list);
     const composition: Composition = this.compositionOf();
     const files = [...this.files.values()]
@@ -559,7 +581,7 @@ export class LogModelBuilder {
       tracks: [...this.tracks.values()].map((s) => s.track),
       history: this.history,
       events: this.events,
-      sessions: this.sessions,
+      sessions,
       timeline: {
         start: this.firstT ?? 0,
         end,

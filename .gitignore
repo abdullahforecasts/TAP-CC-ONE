@@ -13,3 +13,6 @@ out/
 packages/extension/LICENSE
 test-results/
 playwright-report/
+
+# Progress demos (screenshots, videos, recorded sample projects)
+progress_till_*/

@@ -139,6 +139,22 @@ importers:
         specifier: 22.20.5
         version: 22.20.5
 
+  tools/demo:
+    dependencies:
+      '@tap/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@tap/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
+    devDependencies:
+      '@playwright/test':
+        specifier: 1.63.0
+        version: 1.63.0
+      '@types/node':
+        specifier: 22.20.5
+        version: 22.20.5
+
   tools/fuzz:
     dependencies:
       '@tap/core':

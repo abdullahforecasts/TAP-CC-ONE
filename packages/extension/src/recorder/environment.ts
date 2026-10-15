@@ -14,6 +14,7 @@ export const AI_ASSIST_EXTENSIONS: readonly string[] = [
   'sourcegraph.cody-ai',
   'supermaven.supermaven',
   'saoudrizwan.claude-dev',
+  'kilocode.kilo-code',
   'rooveterinaryinc.roo-cline',
   'anthropic.claude-code',
   'openai.chatgpt',

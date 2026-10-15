@@ -6,7 +6,7 @@ import { openReplay } from '../store.js';
 
 const FILTERS: Array<{ id: EventCategory; label: string }> = [
   { id: 'paste', label: 'Pastes' },
-  { id: 'bulk', label: 'Bulk inserts' },
+  { id: 'bulk', label: 'Tool / AI inserts' },
   { id: 'external', label: 'Outside the editor' },
   { id: 'run', label: 'Runs' },
   { id: 'note', label: 'Notes' },

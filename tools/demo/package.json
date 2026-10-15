@@ -1,0 +1,23 @@
+{
+  "name": "@tap/demo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Records a scripted multi-day student session through the real recorder (progress demos).",
+  "author": "Abdullah Nawaz",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "record": "tsx --conditions=source src/progress03.ts",
+    "inspect": "tsx --conditions=source src/inspect.ts",
+    "capture": "tsx --conditions=source src/capture.ts"
+  },
+  "dependencies": {
+    "@tap/core": "workspace:*",
+    "@tap/ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@playwright/test": "1.63.0"
+  }
+}

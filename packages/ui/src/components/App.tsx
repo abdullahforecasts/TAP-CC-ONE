@@ -74,7 +74,11 @@ export function App() {
               : ''}
         </span>
       </header>
-      <Integrity report={report} comparedWith={data.comparedWith} />
+      <Integrity
+        report={report}
+        comparedWith={data.comparedWith}
+        readable={{ records: model.recordCount, sessions: model.sessions.length }}
+      />
       {model.problem && (
         <p class="problem" role="alert">
           Part of the log could not be read: {model.problem}. Everything before that point is shown.

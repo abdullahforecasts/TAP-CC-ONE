@@ -2,7 +2,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { verifyLog } from '@tap/core';
+import { LogWriter, verifyLog } from '@tap/core';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -11,7 +11,7 @@ import { shares } from '../src/components/Composition.js';
 import { arrivalSummary, pasteSummary } from '../src/components/SaveHistory.js';
 import { buildAxis } from '../src/components/Timeline.js';
 import { Engine } from '../src/engine.js';
-import { fmtDuration, fmtPct } from '../src/format.js';
+import { fmtDuration, fmtPct, fmtSpan } from '../src/format.js';
 import type { ViewData } from '../src/model/types.js';
 import { onHostMessage, resetStore, status, tab, view } from '../src/store.js';
 import { demoLog } from './support/demoLog.js';
@@ -116,6 +116,29 @@ describe('viewer components', () => {
     expect(root.querySelectorAll('[data-testid="event"]').length).toBe(before - 2);
   });
 
+  it('on a damaged log, counts what could be read and says the files were not checked', () => {
+    // Two blocks; the second is damaged, so only the first can be read.
+    const w = LogWriter.create({ created: 0, tool: 'tap-ui-test', logId: new Uint8Array(16) });
+    w.append('NOTE', { text: 'first block' }, { t: 1000, m: 0 });
+    w.append('NOTE', { text: 'still the first block' }, { t: 2000, m: 1000 });
+    const first = w.drain();
+    w.append('NOTE', { text: 'second block' }, { t: 3000, m: 2000 });
+    const second = w.drain();
+    const bytes = new Uint8Array([...first, ...second]);
+    bytes[bytes.length - 3]! ^= 1;
+    const engine = new Engine();
+    const res = engine.handle({ type: 'load', bytes, submission: [], comparedWith: 'the submitted files' });
+    if (res.type !== 'view') throw new Error(res.message);
+    show(res.data);
+    expect(root.querySelector('[data-testid="verdict"]')?.textContent).toBe('Not intact');
+    expect(res.data.report.recordCount).toBe(0);
+    expect(res.data.model.recordCount).toBe(2);
+    expect(root.querySelector('.integrity-head')?.textContent).toContain('2 records readable');
+    const files = [...root.querySelectorAll('.check')].at(-1)!;
+    expect(files.textContent).toContain('Matches the submitted files');
+    expect(files.textContent).toContain('Not checked');
+  });
+
   it('loads through the host protocol without a worker (fallback)', async () => {
     act(() => {
       render(<App />, root);
@@ -132,6 +155,14 @@ describe('viewer components', () => {
   });
 });
 
+describe('time spans', () => {
+  it('include the dates only when the span crosses a day', () => {
+    const t = (d: number, h: number, m: number) => new Date(2026, 9, d, h, m).getTime();
+    expect(fmtSpan(t(12, 10, 11), t(12, 10, 16))).toBe('10:11:00 → 10:16:00');
+    expect(fmtSpan(t(12, 10, 11), t(13, 10, 16))).toBe('10-12 10:11 → 10-13 10:16');
+  });
+});
+
 describe('composition maths', () => {
   it('shares are percentages of non-whitespace characters and add up to 100', () => {
     const data = demoView();
@@ -145,7 +176,7 @@ describe('composition maths', () => {
 
   it('summarises how code arrived between saves', () => {
     const since = demoView().model.history[1]!.since!;
-    expect(arrivalSummary(since)).toBe('pasted 48% · internal copy 47% · typed 6%');
+    expect(arrivalSummary(since)).toBe('pasted from outside 48% · copied from own files 47% · typed 6%');
     expect(pasteSummary(since)).toBe(
       '2 pastes, 7 lines; internal copy from util.py; 1 from outside the workspace',
     );

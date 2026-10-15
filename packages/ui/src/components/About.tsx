@@ -72,7 +72,13 @@ export function About({ data }: { data: ViewData }) {
             <tr key={s.index}>
               <td>{s.index}</td>
               <td>{fmtDateTime(s.t)}</td>
-              <td>{s.endT !== undefined ? fmtDuration(s.endT - s.t) : '—'}</td>
+              <td>
+                {s.endT !== undefined
+                  ? fmtDuration(s.endT - s.t)
+                  : s.lastT !== undefined
+                    ? `${fmtDuration(s.lastT - s.t)} to the last record`
+                    : '—'}
+              </td>
               <td>
                 {s.app} {s.vsc} ({s.os})
               </td>
@@ -85,7 +91,7 @@ export function About({ data }: { data: ViewData }) {
       </table>
       <p class="muted">
         The log records which AI-assist extensions were enabled; it cannot tell whether they were used, beyond
-        the bulk insertions shown in the history.
+        the tool / AI insertions shown in the history.
       </p>
     </section>
   );
