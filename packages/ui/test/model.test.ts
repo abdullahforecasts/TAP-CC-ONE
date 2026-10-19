@@ -426,3 +426,57 @@ describe('runs cut off by the end of a session', () => {
     ]);
   });
 });
+
+describe('undo and redo in the replay', () => {
+  it('marks text brought back by undo, which keeps the origin it had', () => {
+    const key = keyPairFromSeed(sha256(utf8('ui-undo')));
+    const w = LogWriter.create({ created: 1, tool: 't', logId: new Uint8Array(16) });
+    let t = 1_000;
+    const T = () => {
+      t += 500;
+      return { t, m: t };
+    };
+    w.append(
+      'SESSION_START',
+      {
+        sid: new Uint8Array(16),
+        pub: key.publicKey,
+        vsc: '1',
+        app: 'vscode',
+        os: 'linux',
+        ext: '0',
+        aiExt: [],
+        liveShare: false,
+        cfgHash: new Uint8Array(32),
+      },
+      T(),
+    );
+    w.append('FILE_OP', { op: 'create', f: 0, path: 'a.c', origin: 'editor' }, T());
+    w.append('EDIT_BATCH', { f: 0, c: [[100, 0, 0, 'int a;\n']] }, T()); // typed
+    w.append('EDIT_BATCH', { f: 0, c: [[100, 7, 0, 'int b = f();\n', Flag.BULK]] }, T()); // tool insert
+    w.append('EDIT_BATCH', { f: 0, c: [[100, 7, 13, '']] }, T()); // deleted
+    w.append('EDIT_BATCH', { f: 0, c: [[100, 7, 0, 'int b = f();\n', Flag.UNDO]] }, T()); // undo
+    w.append('EDIT_BATCH', { f: 0, c: [[100, 0, 0, '// x\n']] }, T()); // typed again
+    const model = load(w.drain());
+    const track = model.tracks.find((tr) => tr.f === 0)!;
+    expect(track.events.map((e) => e.undo ?? false)).toEqual([false, false, false, true, false]);
+
+    const frame = frameAt(track, track.events.length);
+    expect(frame.text).toBe('// x\nint a;\nint b = f();\n');
+    // The restored line keeps its tool/AI colour...
+    expect(frame.spans.map((s) => [s.origin, s.len])).toEqual([
+      ['typed', 12],
+      ['bulk', 13],
+    ]);
+    // ...and is marked as brought back by undo, wherever it moved to.
+    expect(frame.undo.map((s) => [s.origin, s.len])).toEqual([
+      ['typed', 12],
+      ['undo-redo', 13],
+    ]);
+    // Keyframes and stepping forward agree.
+    expect(frameAt(track, 4).undo.map((s) => [s.origin, s.len])).toEqual([
+      ['typed', 7],
+      ['undo-redo', 13],
+    ]);
+  });
+});

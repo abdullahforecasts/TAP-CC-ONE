@@ -515,9 +515,17 @@ input:focus-visible,
   --swatch: var(--o-resync);
 }
 
-.cm-content [class^="o-"] {
+.cm-content [class^="o-"],
+.cm-content [class*=" o-"] {
   background: color-mix(in srgb, var(--swatch) 28%, transparent);
   border-bottom: 1px solid var(--swatch);
+}
+
+/* Text brought back by undo or redo: keeps its origin colour, plus a dashed underline. */
+.r-undo {
+  text-decoration: underline dashed var(--c-blue);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
 }
 
 /* ---- timeline ------------------------------------------------------------------------------ */

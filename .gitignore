@@ -16,3 +16,4 @@ playwright-report/
 
 # Progress demos (screenshots, videos, recorded sample projects)
 progress_till_*/
+.tap/

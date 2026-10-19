@@ -10,6 +10,8 @@ export interface TrackEvent {
   ins: string;
   origin: Origin;
   copiedFrom?: string;
+  /** The inserted text was brought back by undo or redo (it keeps the origin it had before). */
+  undo?: true;
 }
 
 /** Full text and origins after `index` events (0 = before the first event). */
@@ -17,6 +19,8 @@ export interface Keyframe {
   index: number;
   text: string;
   spans: Span[];
+  /** Which text was brought back by undo or redo: spans with origin 'undo-redo', the rest 'typed'. */
+  undo: Span[];
 }
 
 /** Everything that happened to one file's text, for the replay player. */

@@ -9,6 +9,7 @@ import {
   countNonWhitespace,
   type EditEvent,
   emptyComposition,
+  Flag,
   Kind,
   keyFingerprint,
   type LogHeader,
@@ -19,6 +20,7 @@ import {
   toHex,
 } from '@tap/core';
 import { diffStats } from './diff.js';
+import { applyUndoMark } from './playback.js';
 import type {
   ActivityBucket,
   EventCategory,
@@ -48,6 +50,8 @@ interface TrackState {
   track: FileTrack;
   text: string;
   spans: SpanList;
+  /** Text brought back by undo or redo (see Keyframe.undo). */
+  undo: SpanList;
 }
 
 interface SavePoint {
@@ -400,6 +404,8 @@ export class LogModelBuilder {
     state.spans.insert(e.off, e.ins.length, e.origin, e.seq);
     const ev: TrackEvent = { seq: e.seq, t: rec.t, off: e.off, del: e.del, ins: e.ins, origin: e.origin };
     if (e.copiedFrom !== undefined) ev.copiedFrom = e.copiedFrom;
+    if (e.ins.length > 0 && (e.flags & (Flag.UNDO | Flag.REDO)) !== 0) ev.undo = true;
+    applyUndoMark(state.undo, ev);
     const events = state.track.events;
     events.push(ev);
     this.recEvents.push(ev);
@@ -450,9 +456,10 @@ export class LogModelBuilder {
     if (!state) {
       const path = this.replayer.files.get(f)?.path ?? `file ${f}`;
       state = {
-        track: { f, path, events: [], keyframes: [{ index: 0, text: '', spans: [] }] },
+        track: { f, path, events: [], keyframes: [{ index: 0, text: '', spans: [], undo: [] }] },
         text: '',
         spans: new SpanList(),
+        undo: new SpanList(),
       };
       this.tracks.set(f, state);
     }
@@ -608,7 +615,12 @@ export class LogModelBuilder {
 }
 
 function keyframe(state: TrackState, index: number): Keyframe {
-  return { index, text: state.text, spans: state.spans.toArray().map((s) => ({ ...s })) };
+  return {
+    index,
+    text: state.text,
+    spans: state.spans.toArray().map((s) => ({ ...s })),
+    undo: state.undo.toArray().map((s) => ({ ...s })),
+  };
 }
 
 function addSpans(total: Composition, text: string, spans: readonly Span[]): void {

@@ -7,12 +7,21 @@ export interface Frame {
   index: number;
   text: string;
   spans: Span[];
+  /** Text brought back by undo or redo (origin 'undo-redo'); see Keyframe.undo. */
+  undo: Span[];
 }
 
-/** Applies one event to a text and its span list. */
-export function applyEvent(text: string, spans: SpanList, e: TrackEvent): string {
+/** Records in `undo` which text an event brought back by undo or redo. */
+export function applyUndoMark(undo: SpanList, e: TrackEvent): void {
+  undo.remove(e.off, e.del);
+  undo.insert(e.off, e.ins.length, e.undo ? 'undo-redo' : 'typed', e.seq);
+}
+
+/** Applies one event to a text, its span list and its undo marks. */
+export function applyEvent(text: string, spans: SpanList, e: TrackEvent, undo?: SpanList): string {
   spans.remove(e.off, e.del);
   spans.insert(e.off, e.ins.length, e.origin, e.seq);
+  if (undo) applyUndoMark(undo, e);
   return text.slice(0, e.off) + e.ins + text.slice(e.off + e.del);
 }
 
@@ -39,8 +48,14 @@ export function frameAt(track: FileTrack, index: number): Frame {
   const key = track.keyframes[lo]!;
   let text = key.text;
   const spans = spanListOf(key.spans);
-  for (let i = key.index; i < target; i++) text = applyEvent(text, spans, track.events[i]!);
-  return { index: target, text, spans: spans.toArray().map((s) => ({ ...s })) };
+  const undo = spanListOf(key.undo);
+  for (let i = key.index; i < target; i++) text = applyEvent(text, spans, track.events[i]!, undo);
+  return {
+    index: target,
+    text,
+    spans: spans.toArray().map((s) => ({ ...s })),
+    undo: undo.toArray().map((s) => ({ ...s })),
+  };
 }
 
 /** Index of the first event with sequence number > seq (the position just after record seq). */

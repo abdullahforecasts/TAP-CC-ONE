@@ -1,9 +1,16 @@
-import { ChangeSet, EditorState, RangeSetBuilder, StateEffect, StateField } from '@codemirror/state';
+import {
+  ChangeSet,
+  EditorState,
+  RangeSet,
+  RangeSetBuilder,
+  StateEffect,
+  StateField,
+} from '@codemirror/state';
 import { Decoration, type DecorationSet, EditorView, lineNumbers } from '@codemirror/view';
 import type { Origin, SpanList } from '@tap/core';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { fmtCount, fmtDateTime, ORIGIN_HELP, ORIGIN_LABEL, ORIGIN_ORDER } from '../format.js';
-import { delayBefore, frameAt, spanListOf } from '../model/playback.js';
+import { applyUndoMark, delayBefore, frameAt, spanListOf } from '../model/playback.js';
 import type { FileTrack, LogModel } from '../model/types.js';
 import { replayRequest } from '../store.js';
 
@@ -37,14 +44,23 @@ function markFor(origin: Origin): Decoration {
   return mark;
 }
 
-function decorations(spans: SpanList): DecorationSet {
+/** Text brought back by undo or redo: underlined, on top of the colour of its origin. */
+const undoMark = Decoration.mark({ class: 'r-undo', attributes: { title: 'brought back by undo or redo' } });
+
+function decorations(spans: SpanList, undo: SpanList): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
   let pos = 0;
   for (const span of spans.toArray()) {
     if (!PLAIN.has(span.origin) && span.len > 0) builder.add(pos, pos + span.len, markFor(span.origin));
     pos += span.len;
   }
-  return builder.finish();
+  const restored = new RangeSetBuilder<Decoration>();
+  pos = 0;
+  for (const span of undo.toArray()) {
+    if (span.origin === 'undo-redo' && span.len > 0) restored.add(pos, pos + span.len, undoMark);
+    pos += span.len;
+  }
+  return RangeSet.join([builder.finish(), restored.finish()]);
 }
 
 /** A file's name in the picker; deleted files and earlier names are marked so two never look alike. */
@@ -60,6 +76,7 @@ interface Shown {
   f: number;
   index: number;
   spans: SpanList;
+  undo: SpanList;
 }
 
 export function Replay({ model }: { model: LogModel }) {
@@ -130,25 +147,27 @@ export function Replay({ model }: { model: LogModel }) {
         changes = changes.compose(step);
         cur.spans.remove(e.off, e.del);
         cur.spans.insert(e.off, e.ins.length, e.origin, e.seq);
+        applyUndoMark(cur.undo, e);
         last = e.off + e.ins.length;
       }
       cur.index = target;
       view.dispatch({
         changes,
         effects: [
-          setMarks.of(decorations(cur.spans)),
+          setMarks.of(decorations(cur.spans, cur.undo)),
           ...(last === undefined ? [] : [EditorView.scrollIntoView(last, { y: 'center' })]),
         ],
       });
     } else {
       const frame = frameAt(track, target);
       const spans = spanListOf(frame.spans);
-      shown.current = { f: track.f, index: target, spans };
+      const undo = spanListOf(frame.undo);
+      shown.current = { f: track.f, index: target, spans, undo };
       const e = track.events[target - 1];
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: frame.text },
         effects: [
-          setMarks.of(decorations(spans)),
+          setMarks.of(decorations(spans, undo)),
           ...(e
             ? [EditorView.scrollIntoView(Math.min(e.off + e.ins.length, frame.text.length), { y: 'center' })]
             : []),
@@ -257,6 +276,7 @@ export function Replay({ model }: { model: LogModel }) {
             {' '}
             · {fmtDateTime(event.t)} · {ORIGIN_LABEL[event.origin]}
             {event.copiedFrom ? ` from ${event.copiedFrom}` : ''}
+            {event.undo ? ' · brought back by undo/redo' : ''}
           </>
         )}
       </div>
@@ -267,6 +287,9 @@ export function Replay({ model }: { model: LogModel }) {
             <span class={`swatch o-${o}`} /> {ORIGIN_LABEL[o]}
           </li>
         ))}
+        <li title="Text brought back by undo or redo keeps the colour of where it first came from.">
+          <span class="r-undo">abc</span> brought back by undo/redo
+        </li>
         <li class="muted">Typed text and text already there are not highlighted.</li>
       </ul>
     </section>
