@@ -9,10 +9,12 @@ import {
   emptyComposition,
   type Origin,
   originFromFlags,
+  type Span,
   SpanList,
 } from './provenance.js';
 import type { AnyRecord, FileSnapshotBody, SnapshotOrigin } from './records.js';
 import { contentHash, detectEol, normalizeText } from './text.js';
+import { minimalEdits } from './textdiff.js';
 
 export type Severity = 'fail' | 'warn' | 'info';
 
@@ -62,9 +64,19 @@ export interface ReplaySnapshot {
   seq: number;
   files: Array<{ f: number; path: string; text: string; spans?: SpanList }>;
   retired: number[];
+  /** Recently removed text per file, for undo/redo provenance. */
+  removed?: Array<[number, Array<{ text: string; spans: Span[] }>]>;
 }
 
 const DS_STATE_BYTES = ds(DS_STATE);
+
+/** Removed texts remembered per file for undo/redo provenance (spec §7.1). */
+export const REMOVED_HISTORY = 64;
+
+interface RemovedText {
+  text: string;
+  spans: Span[];
+}
 
 const SNAPSHOT_PROVENANCE: Record<SnapshotOrigin, Origin> = {
   preexisting: 'preexisting',
@@ -95,6 +107,8 @@ export class Replayer {
   readonly files = new Map<number, FileState>();
   readonly retired = new Set<number>();
   private readonly pendingExternal = new Map<number, { h: Uint8Array; seq: number }>();
+  /** Recently removed text per file with its origins (provenance only), for undo and redo. */
+  private readonly removed = new Map<number, RemovedText[]>();
   private readonly provenance: boolean;
   private readonly onEdit: ((event: EditEvent) => void) | undefined;
   lastSeq = -1;
@@ -112,6 +126,14 @@ export class Replayer {
       r.files.set(file.f, state);
     }
     for (const f of snapshot.retired) r.retired.add(f);
+    if (r.provenance && snapshot.removed) {
+      for (const [f, list] of snapshot.removed) {
+        r.removed.set(
+          f,
+          list.map((e) => ({ text: e.text, spans: e.spans.map((x) => ({ ...x })) })),
+        );
+      }
+    }
     r.lastSeq = snapshot.seq;
     return r;
   }
@@ -125,6 +147,10 @@ export class Replayer {
         return copy;
       }),
       retired: [...this.retired],
+      removed: [...this.removed].map(([f, list]) => [
+        f,
+        list.map((e) => ({ text: e.text, spans: e.spans.map((x) => ({ ...x })) })),
+      ]),
     };
   }
 
@@ -198,15 +224,49 @@ export class Replayer {
             if (ins.length > 0 && (flags & Flag.PASTE) !== 0) source = this.copySource(ins);
             origin = originFromFlags(flags, source !== undefined);
           }
-          if (file.spans) {
-            file.spans.remove(off, del);
-            file.spans.insert(off, ins.length, origin, rec.s);
-          }
-          file.text = file.text.slice(0, off) + ins + file.text.slice(off + del);
-          if (this.onEdit) {
-            const event: EditEvent = { f: file.f, seq: rec.s, off, del, ins, origin, flags };
-            if (source !== undefined) event.copiedFrom = source;
-            this.onEdit(event);
+          // A change that replaces text (an editor, tool or AI rewriting a whole region) only
+          // re-attributes what really differs; unchanged code keeps its origin (spec §7.1).
+          const parts =
+            tracking && del > 0 && ins.length > 0
+              ? minimalEdits(file.text.slice(off, off + del), ins).map((e) => ({ ...e, off: off + e.off }))
+              : [{ off, del, ins }];
+          const undoRedo = (flags & (Flag.UNDO | Flag.REDO)) !== 0;
+          for (const part of parts) {
+            // Undo and redo bring back text with the origin it had when it was removed.
+            let pieces: Array<{ text: string; origin: Origin; seq: number }> = [
+              { text: part.ins, origin, seq: rec.s },
+            ];
+            if (file.spans) {
+              if (part.del > 0) this.rememberRemoved(file, part.off, part.del);
+              if (undoRedo && part.ins !== '') {
+                const restored = this.restoredSpans(file, part.ins);
+                if (restored) pieces = restored;
+              }
+              file.spans.remove(part.off, part.del);
+              let at = part.off;
+              for (const piece of pieces) {
+                file.spans.insert(at, piece.text.length, piece.origin, piece.seq);
+                at += piece.text.length;
+              }
+            }
+            file.text = file.text.slice(0, part.off) + part.ins + file.text.slice(part.off + part.del);
+            if (this.onEdit) {
+              let at = part.off;
+              pieces.forEach((piece, i) => {
+                const event: EditEvent = {
+                  f: file.f,
+                  seq: rec.s,
+                  off: at,
+                  del: i === 0 ? part.del : 0,
+                  ins: piece.text,
+                  origin: piece.origin,
+                  flags,
+                };
+                if (source !== undefined) event.copiedFrom = source;
+                this.onEdit!(event);
+                at += piece.text.length;
+              });
+            }
           }
         }
         break;
@@ -307,6 +367,36 @@ export class Replayer {
     return true;
   }
 
+  /** Remembers removed text with its origins, so a later undo or redo can restore them. */
+  private rememberRemoved(file: FileState, off: number, len: number): void {
+    if (!file.spans) return;
+    const list = this.removed.get(file.f) ?? [];
+    list.push({ text: file.text.slice(off, off + len), spans: file.spans.slice(off, len) });
+    if (list.length > REMOVED_HISTORY) list.shift();
+    this.removed.set(file.f, list);
+  }
+
+  /** The origins `text` had when it was last removed from the file, newest removal first. */
+  private restoredSpans(
+    file: FileState,
+    text: string,
+  ): Array<{ text: string; origin: Origin; seq: number }> | undefined {
+    const list = this.removed.get(file.f);
+    if (!list) return undefined;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const entry = list[i]!;
+      if (entry.text !== text) continue;
+      const out: Array<{ text: string; origin: Origin; seq: number }> = [];
+      let pos = 0;
+      for (const span of entry.spans) {
+        out.push({ text: text.slice(pos, pos + span.len), origin: span.origin, seq: span.seq });
+        pos += span.len;
+      }
+      return out;
+    }
+    return undefined;
+  }
+
   private addFile(f: number, path: string, text: string, origin: Origin, seq: number): void {
     const state: FileState = { f, path, text };
     if (this.provenance) state.spans = SpanList.of(text.length, origin, seq);
@@ -390,27 +480,16 @@ export class Replayer {
       default:
         break;
     }
-    // Replace only the region that differs, so unchanged code keeps its origin.
-    const old = existing.text;
-    let prefix = 0;
-    const maxPrefix = Math.min(old.length, b.text.length);
-    while (prefix < maxPrefix && old.charCodeAt(prefix) === b.text.charCodeAt(prefix)) prefix++;
-    let suffix = 0;
-    const maxSuffix = Math.min(old.length, b.text.length) - prefix;
-    while (
-      suffix < maxSuffix &&
-      old.charCodeAt(old.length - 1 - suffix) === b.text.charCodeAt(b.text.length - 1 - suffix)
-    ) {
-      suffix++;
+    // Replace only what differs, so unchanged code keeps its origin (spec §7.1).
+    const origin = SNAPSHOT_PROVENANCE[b.origin];
+    for (const e of minimalEdits(existing.text, b.text)) {
+      if (existing.spans) {
+        existing.spans.remove(e.off, e.del);
+        existing.spans.insert(e.off, e.ins.length, origin, seq);
+      }
+      existing.text = existing.text.slice(0, e.off) + e.ins + existing.text.slice(e.off + e.del);
+      this.onEdit?.({ f: b.f, seq, off: e.off, del: e.del, ins: e.ins, origin, flags: 0 });
     }
-    const del = old.length - prefix - suffix;
-    const ins = b.text.slice(prefix, b.text.length - suffix);
-    if (existing.spans) {
-      existing.spans.remove(prefix, del);
-      existing.spans.insert(prefix, ins.length, SNAPSHOT_PROVENANCE[b.origin], seq);
-    }
-    existing.text = b.text;
-    this.onEdit?.({ f: b.f, seq, off: prefix, del, ins, origin: SNAPSHOT_PROVENANCE[b.origin], flags: 0 });
   }
 }
 

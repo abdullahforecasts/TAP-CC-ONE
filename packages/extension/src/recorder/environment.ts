@@ -30,6 +30,12 @@ export const AI_ASSIST_EXTENSIONS: readonly string[] = [
   'codium.codium',
   'tabby.vscode-tabby',
   'pieces.pieces-vscode',
+  // Local-model assistants (Ollama, llama.cpp, LM Studio and similar).
+  'rjmacarthy.twinny',
+  'ex3ndr.llama-coder',
+  '10nates.ollama-autocoder',
+  'privy.privy-vscode',
+  'huggingface.huggingface-vscode',
 ];
 
 const AI_SET = new Set(AI_ASSIST_EXTENSIONS);

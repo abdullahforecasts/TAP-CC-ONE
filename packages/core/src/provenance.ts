@@ -115,6 +115,20 @@ export class SpanList {
     this.mergeAround(i);
   }
 
+  /** Copies of the spans covering [off, off + len), trimmed to that range. */
+  slice(off: number, len: number): Span[] {
+    const out: Span[] = [];
+    let pos = 0;
+    for (const span of this.spans) {
+      const from = Math.max(pos, off);
+      const to = Math.min(pos + span.len, off + len);
+      if (to > from) out.push({ len: to - from, origin: span.origin, seq: span.seq });
+      pos += span.len;
+      if (pos >= off + len) break;
+    }
+    return out;
+  }
+
   remove(off: number, len: number): void {
     if (len <= 0) return;
     if (off < 0 || off + len > this.total)

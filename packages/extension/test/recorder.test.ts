@@ -404,6 +404,32 @@ describe('Recorder: file operations through the editor', () => {
     expect(report.finalFiles.map((f) => f.path)).toEqual(['b.py', 'lib/x.py']);
   });
 
+  it('a rename whose disk events arrive first is still one rename (no file appearing outside)', async () => {
+    const sim = await newSim({ 'test.cpp': 'int main() {}\n' });
+    await sim.renameViaEditorWithEarlyWatcher('test.cpp', 'a.cpp');
+    const report = await finish(sim);
+    expect(issues(report).filter((i) => i.includes('EXTERNAL'))).toEqual([]);
+    expect(report.finalFiles.map((f) => f.path)).toEqual(['a.cpp']);
+    const ops = records(sim.bytes).filter((r) => r.k === Kind.FILE_OP || r.k === Kind.FILE_SNAPSHOT);
+    expect(
+      ops.map((r) => (r.k === Kind.FILE_OP ? `${r.b.op}` : `snapshot:${(r.b as { origin: string }).origin}`)),
+    ).toEqual(['snapshot:preexisting', 'rename']);
+  });
+
+  it('a started rename that never completes stops blocking disk events', async () => {
+    const sim = await newSim({});
+    sim.recorder.onFilesWillRename([{ from: 'x.c', to: 'y.c' }]);
+    sim.host.disk.set('y.c', 'made outside');
+    sim.recorder.onDiskEvent('y.c');
+    await sim.settle();
+    expect(loggedText(sim.bytes, 'y.c')).toBeUndefined(); // still blocked by the rename
+    await new Promise((r) => setTimeout(r, 250)); // the grace period ends
+    sim.recorder.onDiskEvent('y.c');
+    await sim.settle();
+    expect(loggedText(sim.bytes, 'y.c')).toBe('made outside');
+    await finish(sim, ['info:EXTERNAL_FILE']);
+  });
+
   it('deletes all recorded files in a deleted folder', async () => {
     const sim = await newSim({ 'd/a.c': 'a', 'd/e/b.c': 'b', 'c.c': 'c' });
     sim.deleteViaEditor('d');

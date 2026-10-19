@@ -98,6 +98,8 @@ export interface RecorderSettings extends ClassifySettings {
   clipboardWaitMs: number;
   /** Debounce for file-system watcher events. */
   diskDebounceMs: number;
+  /** How long a started editor rename may block disk events for its paths. */
+  renameGraceMs: number;
   /**
    * How long to wait for the editor's dirty flag when a change arrives on a clean document and
    * the result does not match the file on disk (see `checkReload`).
@@ -119,6 +121,7 @@ export const DEFAULT_SETTINGS: RecorderSettings = {
   maxBufferedBytes: 64 * 1024,
   clipboardWaitMs: 250,
   diskDebounceMs: 300,
+  renameGraceMs: 5000,
   reloadWaitMs: 150,
   diskSweepIntervalMs: 60_000,
 };
@@ -216,6 +219,8 @@ export class Recorder {
   private readonly lastChangeMono = new Map<number, number>();
   private readonly savingUntil = new Map<string, number>();
   private readonly diskTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Paths in an editor rename that has started but not finished (see onFilesWillRename). */
+  private readonly renaming = new Map<string, ReturnType<typeof setTimeout>>();
   /** Last seen size:mtime of closed files, for the periodic disk sweep. */
   private readonly diskStats = new Map<string, string>();
   private lastSweepMono = 0;
@@ -587,8 +592,37 @@ export class Recorder {
     for (const rel of this.expandFolders(rels)) this.deleteFile(rel, 'editor');
   }
 
+  /**
+   * The editor is about to rename or move files. Until it reports the rename as done, disk
+   * events for those paths are part of the rename, not a file appearing outside the editor.
+   */
+  onFilesWillRename(pairs: ReadonlyArray<{ from: string; to: string }>): void {
+    for (const { from, to } of pairs) {
+      for (const p of [from, to]) {
+        const old = this.renaming.get(p);
+        if (old) clearTimeout(old);
+        // A rename the editor never completes (cancelled, failed) stops blocking after a while.
+        this.renaming.set(
+          p,
+          setTimeout(() => this.renaming.delete(p), this.settings.renameGraceMs),
+        );
+      }
+    }
+  }
+
+  private isRenaming(rel: string): boolean {
+    for (const p of this.renaming.keys()) if (rel === p || rel.startsWith(`${p}/`)) return true;
+    return false;
+  }
+
   /** Files or folders renamed/moved through the editor. */
   onFilesRenamed(pairs: ReadonlyArray<{ from: string; to: string }>): void {
+    for (const { from, to } of pairs) {
+      for (const p of [from, to]) {
+        clearTimeout(this.renaming.get(p));
+        this.renaming.delete(p);
+      }
+    }
     if (this.stateValue !== 'recording') return;
     for (const { from, to } of pairs) {
       const moves: Array<[string, string]> = this.registry.has(from)
@@ -731,6 +765,8 @@ export class Recorder {
   private clearTimers(): void {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = undefined;
+    for (const timer of this.renaming.values()) clearTimeout(timer);
+    this.renaming.clear();
     for (const timer of this.diskTimers.values()) clearTimeout(timer);
     this.diskTimers.clear();
   }
@@ -1024,6 +1060,7 @@ export class Recorder {
   /** Watcher job: compare a closed file on disk with the recorded state. */
   private async checkDisk(rel: string, time: Time): Promise<void> {
     if (this.host.openText(rel) !== undefined) return; // open documents report through the editor
+    if (this.isRenaming(rel)) return; // the editor's rename event records it
     const read = await this.host.readDisk(rel);
     const f = this.registry.get(rel);
     if (read.kind === 'missing') {

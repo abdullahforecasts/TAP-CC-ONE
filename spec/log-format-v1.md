@@ -4,7 +4,6 @@
 |---|---|
 | **Status** | Draft. Frozen at extension release 1.0; until then it may change, always together with the test vectors. |
 | **Author** | Abdullah Nawaz |
-| **License** | MIT (this folder only, see `spec/LICENSE`) |
 | **Reference implementation** | `packages/core` (`@tap/core`) |
 | **Conformance** | `spec/vectors/`: an implementation conforms when it produces the expected result for every vector |
 
@@ -243,7 +242,7 @@ A snapshot that changes a live file's text is reported as: `external` → EXTERN
 
 ### 7.1 Provenance (informative)
 
-Verifiers SHOULD track the origin of every UTF-16 unit of each file: `typed`, `paste`, `internal-copy`, `bulk`, `format`, `undo-redo` (from change flags, in that precedence order: undo/redo, format, paste, bulk, typed), and `preexisting`, `created`, `external`, `resync`, `paused-gap` (from snapshots). A paste whose EOL-normalised, non-blank text already occurs in a live file is `internal-copy`. When a snapshot replaces a file's text, only the region between the longest common prefix and suffix gets the snapshot's origin. Provenance never affects the verdict.
+Verifiers SHOULD track the origin of every UTF-16 unit of each file: `typed`, `paste`, `internal-copy`, `bulk`, `format`, `undo-redo` (from change flags, in that precedence order: undo/redo, format, paste, bulk, typed), and `preexisting`, `created`, `external`, `resync`, `paused-gap` (from snapshots). A paste whose EOL-normalised, non-blank text already occurs in a live file is `internal-copy`. When a change or a snapshot replaces text, only what differs gets the new origin: the deleted and inserted texts (for a snapshot, the old and new file) are reduced by `minimalEdits` — strip the longest common prefix and suffix, diff the remaining lines with Myers' algorithm (at most 1000 line edits and 20000 lines per side, otherwise the remainder is one edit), and strip each differing run's own common prefix and suffix — and only those edits take the change's or snapshot's origin; the rest keeps its origin. Text inserted by an undo or redo change that equals text removed earlier from the same file (the newest of the last 64 removals per file) regains the origins it had when removed; otherwise it is `undo-redo`. Provenance never affects the verdict.
 
 ## 8. Recovery
 
@@ -292,4 +291,6 @@ The chain detects any change to a record that has a later record linking to it. 
 | Unknown header keys | not specified | rejected | Header changes are format changes and bump `fmt`. |
 | RECOVERY / KEY_ROTATION | not specified relative to sessions | allowed between sessions; RECOVERY closes a session left open by a crash | Matches what a recorder does after a crash or key loss. |
 | Snapshot replacement | whole file gets the snapshot's origin | only the changed region does | Keeps typed code attributed to the student when one line changes outside the editor. |
+| Change that replaces text (tool or AI rewriting a whole file) | everything inserted gets the change's origin | only the lines that really differ do (`minimalEdits`) | Copilot's apply replaced a whole file to add one line, turning the student's own code purple. |
+| Undo / redo | always `undo-redo` | regains the origin the text had when removed | Undoing an AI change no longer hides the student's own code. |
 | Anchor verification | §9 | Part 1 checks `ck`/`d` consistency; token signatures are added with anchoring | Part 1 scope. |

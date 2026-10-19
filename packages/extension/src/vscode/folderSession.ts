@@ -364,6 +364,15 @@ export class FolderSession implements vscode.Disposable {
         const rels = e.files.map((u) => this.relOf(u)).filter((x): x is string => x !== undefined);
         if (rels.length > 0) r()?.onFilesDeleted(rels);
       }),
+      vscode.workspace.onWillRenameFiles((e) => {
+        const pairs: Array<{ from: string; to: string }> = [];
+        for (const f of e.files) {
+          const from = this.relOf(f.oldUri);
+          const to = this.relOf(f.newUri);
+          if (from && to) pairs.push({ from, to });
+        }
+        if (pairs.length > 0) r()?.onFilesWillRename(pairs);
+      }),
       vscode.workspace.onDidRenameFiles((e) => {
         const pairs: Array<{ from: string; to: string }> = [];
         for (const f of e.files) {

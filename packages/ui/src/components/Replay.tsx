@@ -47,6 +47,14 @@ function decorations(spans: SpanList): DecorationSet {
   return builder.finish();
 }
 
+/** A file's name in the picker; deleted files and earlier names are marked so two never look alike. */
+function trackLabel(t: FileTrack, model: LogModel): string {
+  const info = model.files.find((x) => x.f === t.f);
+  if (!info) return t.path;
+  const earlier = info.paths.length > 1 ? ` (was ${info.paths.slice(0, -1).join(', ')})` : '';
+  return `${info.path}${earlier}${info.deleted ? ' (deleted)' : ''}`;
+}
+
 /** What the editor currently shows. */
 interface Shown {
   f: number;
@@ -188,7 +196,7 @@ export function Replay({ model }: { model: LogModel }) {
           >
             {tracks.map((t) => (
               <option key={t.f} value={String(t.f)}>
-                {t.path}
+                {trackLabel(t, model)}
               </option>
             ))}
           </select>

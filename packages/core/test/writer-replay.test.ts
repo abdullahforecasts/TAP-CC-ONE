@@ -522,3 +522,68 @@ describe('Replayer edit events', () => {
     ]);
   });
 });
+
+describe('provenance of replacements, undo and redo (spec §7.1)', () => {
+  function spansOf(records: AnyRecord[], f = 0) {
+    const r = new Replayer({ provenance: true });
+    for (const rec of records) r.apply(rec);
+    return r.files
+      .get(f)!
+      .spans!.toArray()
+      .map((s) => [s.origin, s.len]);
+  }
+  function recordsOf(build: (w: LogWriter) => void): AnyRecord[] {
+    const w = newWriter();
+    build(w);
+    return readLog(w.drain()).records.map((x) => x.record);
+  }
+  const typed = 'int main() {\n    return 0;\n}\n';
+
+  it('a tool rewriting the whole file only re-attributes the line it added', () => {
+    const withLine = 'int main() {\n    cout << 1;\n    return 0;\n}\n';
+    const records = recordsOf((w) => {
+      w.append('FILE_SNAPSHOT', snap(0, 'a.cpp', '', 'created' as never), T);
+      w.append('EDIT_BATCH', { f: 0, c: [[0, 0, 0, typed]] }, T);
+      // Copilot-style apply: the whole document replaced by the old text plus one line.
+      w.append('EDIT_BATCH', { f: 0, c: [[0, 0, typed.length, withLine, Flag.BULK]] }, T);
+    });
+    // Only the new line (aligned after the shared indentation) is the tool's.
+    expect(spansOf(records)).toEqual([
+      ['typed', 17],
+      ['bulk', 15],
+      ['typed', withLine.length - 32],
+    ]);
+  });
+
+  it('undo brings removed text back with the origin it had', () => {
+    const records = recordsOf((w) => {
+      w.append('FILE_SNAPSHOT', snap(0, 'a.cpp', '', 'created' as never), T);
+      w.append('EDIT_BATCH', { f: 0, c: [[0, 0, 0, typed]] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: [[0, 13, 14, '']] }, T); // delete the return line
+      w.append('EDIT_BATCH', { f: 0, c: [[0, 13, 0, '    return 0;\n', Flag.UNDO]] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: [[0, 0, 0, '// x\n', Flag.UNDO]] }, T); // never removed
+    });
+    expect(spansOf(records)).toEqual([
+      ['undo-redo', 5],
+      ['typed', typed.length],
+    ]);
+  });
+
+  it('a replay resumed from a snapshot attributes undo the same way', () => {
+    const records = recordsOf((w) => {
+      w.append('FILE_SNAPSHOT', snap(0, 'a.cpp', '', 'created' as never), T);
+      w.append('EDIT_BATCH', { f: 0, c: [[0, 0, 0, typed]] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: [[0, 13, 14, '']] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: [[0, 13, 0, '    return 0;\n', Flag.UNDO]] }, T);
+    });
+    const full = new Replayer({ provenance: true });
+    const half = new Replayer({ provenance: true });
+    records.forEach((r, i) => {
+      full.apply(r);
+      if (i < records.length - 1) half.apply(r);
+    });
+    const resumed = Replayer.fromSnapshot(half.snapshot(), { provenance: true });
+    resumed.apply(records.at(-1)!);
+    expect(resumed.files.get(0)!.spans!.toArray()).toEqual(full.files.get(0)!.spans!.toArray());
+  });
+});

@@ -129,6 +129,7 @@ const emitters = {
   create: new EventEmitter<{ files: Uri[] }>(),
   delete: new EventEmitter<{ files: Uri[] }>(),
   rename: new EventEmitter<{ files: Array<{ oldUri: Uri; newUri: Uri }> }>(),
+  willRename: new EventEmitter<{ files: Array<{ oldUri: Uri; newUri: Uri }> }>(),
   folders: new EventEmitter<{ added: WorkspaceFolder[]; removed: WorkspaceFolder[] }>(),
   windowState: new EventEmitter<{ focused: boolean }>(),
   debugStart: new EventEmitter<{ id: string; name: string; workspaceFolder?: WorkspaceFolder }>(),
@@ -172,6 +173,7 @@ export const workspace = {
   onDidCreateFiles: emitters.create.event,
   onDidDeleteFiles: emitters.delete.event,
   onDidRenameFiles: emitters.rename.event,
+  onWillRenameFiles: emitters.willRename.event,
   onDidChangeWorkspaceFolders: emitters.folders.event,
   createFileSystemWatcher(pattern: RelativePattern): FileSystemWatcher {
     const base = pattern.base as WorkspaceFolder;

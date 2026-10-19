@@ -134,6 +134,7 @@ export const FAST: Partial<RecorderSettings> = {
   flushDelayMs: 5,
   clipboardWaitMs: 30,
   diskDebounceMs: 5,
+  renameGraceMs: 200,
   reloadWaitMs: 20,
 };
 
@@ -350,6 +351,23 @@ export class Sim {
     this.host.docs.delete(rel);
     this.recorder.onFilesDeleted([rel]);
     this.recorder.onDiskEvent(rel);
+  }
+
+  /**
+   * A rename as VS Code really orders it: onWillRenameFiles, the move on disk, the file
+   * watcher's events (which may be handled before the editor reports the rename), then
+   * onDidRenameFiles. The document is closed (closed files have no editor to report them).
+   */
+  async renameViaEditorWithEarlyWatcher(from: string, to: string): Promise<void> {
+    this.recorder.onFilesWillRename([{ from, to }]);
+    this.host.disk.set(to, this.host.disk.get(from)!);
+    this.host.disk.delete(from);
+    this.host.docs.delete(from);
+    this.recorder.onDiskEvent(to);
+    this.recorder.onDiskEvent(from);
+    await new Promise((r) => setTimeout(r, 40)); // the debounced disk checks run first
+    await this.recorder.idle();
+    this.recorder.onFilesRenamed([{ from, to }]);
   }
 
   renameViaEditor(from: string, to: string): void {
