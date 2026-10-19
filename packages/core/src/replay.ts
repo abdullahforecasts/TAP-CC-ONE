@@ -245,7 +245,7 @@ export class Replayer {
               file.spans.remove(part.off, part.del);
               let at = part.off;
               for (const piece of pieces) {
-                file.spans.insert(at, piece.text.length, piece.origin, piece.seq);
+                file.spans.insert(at, piece.text.length, piece.origin, rec.s);
                 at += piece.text.length;
               }
             }

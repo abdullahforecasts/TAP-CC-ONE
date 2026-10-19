@@ -6,6 +6,7 @@ import {
   bytesEqual,
   concatBytes,
   contentHash,
+  type EditEvent,
   emptyComposition,
   Flag,
   Kind,
@@ -585,5 +586,32 @@ describe('provenance of replacements, undo and redo (spec §7.1)', () => {
     const resumed = Replayer.fromSnapshot(half.snapshot(), { provenance: true });
     resumed.apply(records.at(-1)!);
     expect(resumed.files.get(0)!.spans!.toArray()).toEqual(full.files.get(0)!.spans!.toArray());
+  });
+
+  it('edit events alone rebuild the same origins after an undo (what the viewer replays)', () => {
+    // Found by the property test: restored text must carry the undo record's sequence number,
+    // because each edit event has exactly one.
+    const records = recordsOf((w) => {
+      w.append('FILE_SNAPSHOT', snap(0, 'a.cpp', '', 'created' as never), T);
+      w.append('EDIT_BATCH', { f: 0, c: [[0, 0, 0, 'a']] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: [[1, 0, 0, 'a', Flag.BULK]] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: [[2, 0, 1, '']] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: [[3, 0, 0, 'a', Flag.UNDO]] }, T);
+    });
+    const events: EditEvent[] = [];
+    const r = new Replayer({ provenance: true, onEdit: (e) => events.push(e) });
+    for (const rec of records) r.apply(rec);
+    const rebuilt = new SpanList();
+    for (const e of events) {
+      rebuilt.remove(e.off, e.del);
+      rebuilt.insert(e.off, e.ins.length, e.origin, e.seq);
+    }
+    expect(rebuilt.toArray()).toEqual(r.files.get(0)!.spans!.toArray());
+    expect(
+      r.files
+        .get(0)!
+        .spans!.toArray()
+        .map((s) => s.origin),
+    ).toEqual(['bulk', 'typed']);
   });
 });
