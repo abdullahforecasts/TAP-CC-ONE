@@ -48,8 +48,10 @@ const COLUMNS: Origin[] = ['typed', 'internal-copy', 'paste', 'bulk', 'preexisti
 
 export function Composition({ data }: { data: ViewData }) {
   const { model, report } = data;
-  const final = report.composition ?? model.composition;
   const matched = report.findings.some((f) => f.stage === 'submission' && f.severity === 'pass');
+  // When the folder does not match the log, the report counts only matching files (possibly
+  // none); the bar is labelled "all recorded files", so show those.
+  const final = matched && report.composition ? report.composition : model.composition;
   const live = model.files.filter((f) => !f.deleted && f.composition);
   return (
     <section class="composition-panel" aria-label="Composition">

@@ -164,6 +164,26 @@ describe('time spans', () => {
 });
 
 describe('composition maths', () => {
+  it('shows all recorded files when the folder does not match the log', () => {
+    const data = demoView();
+    // As verifyLog reports a mismatched folder: only matching files counted, here none.
+    data.report.composition = { chars: 0, nonWs: 0, byOrigin: {} };
+    data.report.findings = data.report.findings.filter((f) => f.stage !== 'submission');
+    data.report.findings.push({
+      stage: 'submission',
+      severity: 'fail',
+      code: 'SUBMISSION_MISMATCH',
+      message: 'a.cpp differs',
+    });
+    show(data);
+    act(() => {
+      tab.value = 'composition';
+    });
+    const caption = root.querySelector('.composition figcaption')?.textContent ?? '';
+    expect(data.model.composition.nonWs).toBeGreaterThan(0);
+    expect(caption).toContain(`${data.model.composition.nonWs.toLocaleString('en-US')} non-whitespace`);
+  });
+
   it('shares are percentages of non-whitespace characters and add up to 100', () => {
     const data = demoView();
     const report = verifyLog(demoLog().bytes);
