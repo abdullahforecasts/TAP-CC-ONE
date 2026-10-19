@@ -2,6 +2,7 @@
   "name": "tap-cc-one",
   "displayName": "TAP-CC-ONE: Code Authorship Log",
   "description": "Records a tamper-evident history of how your code was written, so you can prove your work is your own.",
+  "icon": "icon.png",
   "version": "0.2.0",
   "publisher": "abdullahforecasts",
   "author": "Abdullah Nawaz",
