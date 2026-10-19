@@ -19,8 +19,8 @@ Click `TAP` in the status bar for the log viewer, pause, resume, notes, verifica
 
 **TAP: View Log** opens your log inside VS Code, read-only:
 
-- **Save History** — every save of every file, newest first, like local version control: what changed (line diff), whether you ran the code and the result, how long you worked since the previous save, and how the new code arrived (typed, pasted, copied from another file of yours, inserted by a tool). **Replay** plays back exactly that stretch of work.
-- **Replay** — any file's whole history with a scrubber, 1× to 64× speed and "skip idle time". Pasted and inserted text is highlighted.
+- **Save History**: every save of every file, newest first, like local version control: what changed (line diff), whether you ran the code and the result, how long you worked since the previous save, and how the new code arrived (typed, pasted, copied from another file of yours, inserted by a tool). **Replay** plays back exactly that stretch of work.
+- **Replay**: any file's whole history with a scrubber, 1× to 64× speed and "skip idle time". Pasted and inserted text is highlighted.
 - **Timeline**, **Composition** (how the final code arrived, per file), **Events** (pastes, runs, notes, outside changes…) and **About this log** (log ID, key fingerprint, editor versions, AI-assist extensions, settings that weaken the evidence).
 
 The checklist at the top shows whether the log is intact and whether it matches the files in your folder. The viewer updates while you work.
@@ -30,7 +30,7 @@ The checklist at the top shows whether the log is intact and whether it matches 
 | Recorded | Not recorded |
 |---|---|
 | Text changes in the folder's code files, grouped every 2 seconds, with timing | Individual key presses, cursor moves, selections, scrolling, the mouse |
-| Whether an insertion matched the clipboard (a paste) — the clipboard itself is never stored | The clipboard contents |
+| Whether an insertion matched the clipboard (a paste); the clipboard itself is never stored | The clipboard contents |
 | Undo, redo, multi-cursor and save-time formatting edits | Anything outside the recorded folder |
 | Saves, file creation, renames and deletions | Absolute paths, your user name, your computer's name |
 | Changes made to files by other programs (as snapshots) | Network activity of any kind (this version makes no network requests) |
