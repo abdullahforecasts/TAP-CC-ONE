@@ -11,7 +11,7 @@ A VS Code extension that records a tamper-evident, independently timestamped his
 | 1 | Foundations & core format (`@tap/core`, spec, test vectors, CI) | **Done** |
 | 2 | Recorder extension | **Done** (0.1.0 development build) |
 | 3 | Viewer: Save History & Replay | **Done** (0.2.0 development build) |
-| 4 | Timestamp anchoring | Planned |
+| 4 | Timestamp anchoring, export and opening submissions | **Done** (0.3.0 development build) |
 | 5 | Verifier (web + CLI) | Planned |
 | 6 | Hardening, beta & publishing | Planned |
 
@@ -21,6 +21,7 @@ See [`design.md`](design.md) for the full design and [`implementationGoals.md`](
 
 ```
 design.md                 design document
+docs/anchoring-providers.md   timestamp services, trusted roots, recording real answers
 implementationGoals.md    six-part implementation plan
 spec/
   log-format-v1.md        normative log format and verification rules
@@ -30,7 +31,8 @@ packages/
   core/                   @tap/core — format, chain, signatures, replay, provenance, verification
   ui/                     @tap/ui — the log viewer (Save History, replay, timeline, composition)
   extension/              the VS Code extension (recorder, viewer panel, storage, tests)
-  anchor/ verifier-web/ cli/   placeholders for Parts 4–5
+  anchor/                 @tap/anchor — RFC 3161 and OpenTimestamps clients and token verification
+  verifier-web/ cli/      placeholders for Part 5
 tools/
   gen-vectors/            deterministic test vector generator
   bench/                  performance benchmark (4-hour DSA session simulation)
@@ -44,7 +46,7 @@ Requirements: Node.js 20.11 or newer (22 recommended) and pnpm 10. If pnpm is no
 ```bash
 corepack enable          # once; makes the pinned pnpm version available
 pnpm install
-pnpm check               # lint, typecheck, tests with coverage, build, browser check, vectors check
+pnpm check               # lint, typecheck, tests with coverage, build, browser check, vectors and roots checks
 ```
 
 Individual commands:
@@ -62,13 +64,15 @@ Individual commands:
 | `pnpm bench` | Simulates a 4-hour assignment and reports speed and log size |
 | `pnpm fuzz --seconds 60` | Fuzzes the verifier with mutated logs |
 | `pnpm --filter @tap/ui run e2e` | Viewer end-to-end tests in Chromium (needs `pnpm --filter @tap/ui exec playwright install chromium` once) |
-| `pnpm --filter tap-cc-one run package` | Builds `packages/extension/tap-cc-one-0.2.0.vsix` |
+| `pnpm --filter tap-cc-one run package` | Builds `packages/extension/tap-cc-one-0.3.0.vsix` |
+| `pnpm --filter @tap/anchor roots --check` | Fails if a trusted timestamp root expired or `roots.generated.ts` is stale |
+| `pnpm --filter @tap/anchor real` | Records real answers from the timestamp services (needs internet; see `docs/anchoring-providers.md`) |
 | `pnpm --filter tap-cc-one test:integration` | Runs the extension tests inside a real VS Code (downloads VS Code; on Linux use `xvfb-run -a`) |
 
 ## Trying the extension
 
 - **From source:** open the repo in VS Code and press **F5** (uses `.vscode/launch.json`). A second VS Code window opens with the extension loaded; open any folder with code there and choose **Start**.
-- **From the VSIX:** run `pnpm --filter tap-cc-one run package`, then in VS Code: Extensions view → `⋯` → **Install from VSIX…** → pick `packages/extension/tap-cc-one-0.2.0.vsix`.
+- **From the VSIX:** run `pnpm --filter tap-cc-one run package`, then in VS Code: Extensions view → `⋯` → **Install from VSIX…** → pick `packages/extension/tap-cc-one-0.3.0.vsix`.
 - **The viewer on its own:** `pnpm --filter @tap/ui build`, then serve `packages/ui/dist` with any static server and open a `.codelog` file in the page.
 
 Set `TAP_PROPERTY_RUNS=2000` to run the property tests harder than the default 150 cases.
