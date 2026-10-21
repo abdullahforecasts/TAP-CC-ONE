@@ -1,7 +1,7 @@
 {
   "name": "@tap/ui",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TAP-CC-ONE viewer: Save History, replay player, timeline, integrity checklist, composition.",
   "author": "Abdullah Nawaz",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -25,7 +25,8 @@
     "@codemirror/view": "6.43.12",
     "@preact/signals": "2.11.2",
     "@tap/core": "workspace:*",
-    "preact": "10.29.8"
+    "preact": "10.29.8",
+    "@tap/anchor": "workspace:*"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

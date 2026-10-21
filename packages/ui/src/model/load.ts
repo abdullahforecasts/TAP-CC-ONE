@@ -3,6 +3,7 @@
  * recording) only costs the new blocks. Also runs the verifier over the whole log.
  */
 import {
+  type AnchorVerifier,
   CODEC_NONE,
   checkMagic,
   concatBytes,
@@ -89,7 +90,10 @@ export class LogLoader {
     return this.builder.result();
   }
 
-  verify(submission?: readonly SubmittedFile[]): VerifyReport {
-    return verifyLog(this.bytes, submission ? { submission } : {});
+  verify(submission?: readonly SubmittedFile[], anchorVerifier?: AnchorVerifier): VerifyReport {
+    return verifyLog(this.bytes, {
+      ...(submission ? { submission } : {}),
+      ...(anchorVerifier ? { anchorVerifier } : {}),
+    });
   }
 }

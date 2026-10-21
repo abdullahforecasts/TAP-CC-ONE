@@ -357,6 +357,22 @@ input:focus-visible,
   color: var(--bad);
 }
 
+.entry .existed {
+  color: var(--ok);
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+.anchors td.status-valid,
+.anchors td.status-confirmed {
+  color: var(--ok);
+}
+.anchors td.status-untrusted,
+.anchors td.status-pending {
+  color: var(--warn);
+}
+.anchors td.status-invalid {
+  color: var(--bad);
+}
 .run.failed {
   color: var(--bad);
 }
@@ -596,9 +612,29 @@ input:focus-visible,
 .mark.save line {
   stroke: var(--fg);
 }
-.mark.anchor line {
+.mark.anchor line,
+.mark.anchor path {
   stroke: var(--c-green);
   stroke-width: 2;
+}
+.mark.anchor path {
+  fill: var(--c-green);
+  stroke: var(--bg);
+  stroke-width: 1;
+}
+.mark.anchor.confirmed path {
+  fill: var(--c-orange);
+}
+.mark.anchor.pending path,
+.mark.anchor.unverified path {
+  fill: none;
+  stroke: var(--muted);
+}
+.mark.anchor.untrusted path {
+  fill: var(--warn);
+}
+.mark.anchor.invalid path {
+  fill: var(--bad);
 }
 .mark.clickable {
   cursor: pointer;

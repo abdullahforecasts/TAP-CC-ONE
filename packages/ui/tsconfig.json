@@ -10,7 +10,9 @@
     "types": ["node", "vite/client"],
     "baseUrl": ".",
     "paths": {
-      "@tap/core": ["../core/src/index.ts"]
+      "@tap/core": ["../core/src/index.ts"],
+      "@tap/anchor": ["../anchor/src/index.ts"],
+      "@tap/anchor/testing": ["../anchor/src/testing.ts"]
     }
   },
   "include": ["src", "test", "e2e", "build.mjs"]

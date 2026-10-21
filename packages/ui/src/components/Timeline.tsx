@@ -1,4 +1,6 @@
+import type { VerifyReport } from '@tap/core';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { label as anchorLabel, STATUS_TEXT } from '../anchoring.js';
 import { fmtDateTime, fmtDuration, fmtTime } from '../format.js';
 import { indexAfterSeq } from '../model/playback.js';
 import type { LogModel, Marker, Range } from '../model/types.js';
@@ -72,7 +74,32 @@ function laneY(id: (typeof LANES)[number]['id']): number {
   return LANES.findIndex((l) => l.id === id) * LANE_H + 24;
 }
 
-export function Timeline({ model }: { model: LogModel }) {
+interface AnchorMark {
+  t: number;
+  status: string;
+  title: string;
+}
+
+/** Timestamps at their verified time (or, unverified, at the time they were written). */
+function anchorMarks(model: LogModel, report: VerifyReport | undefined): AnchorMark[] {
+  const anchors = report?.anchoring?.anchors;
+  if (!anchors) {
+    return model.timeline.markers
+      .filter((m) => m.lane === 'anchor')
+      .map((m) => ({ t: m.t, status: 'unverified', title: `${fmtDateTime(m.t)}: ${m.label}` }));
+  }
+  return anchors.map((a) => {
+    const t = a.time ?? a.t;
+    const who = anchorLabel(a);
+    const title =
+      a.time !== undefined
+        ? `Checkpoint ${a.ck} timestamped by ${who}: everything before it existed by ${fmtDateTime(a.time)}`
+        : `${fmtDateTime(a.t)}: timestamp for checkpoint ${a.ck} from ${who} (${STATUS_TEXT[a.status]})${a.message ? `: ${a.message}` : ''}`;
+    return { t, status: a.status, title };
+  });
+}
+
+export function Timeline({ model, report }: { model: LogModel; report?: VerifyReport | undefined }) {
   const box = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(900);
   useEffect(() => {
@@ -84,15 +111,17 @@ export function Timeline({ model }: { model: LogModel }) {
   }, []);
 
   const tl = model.timeline;
+  const anchors = useMemo(() => anchorMarks(model, report), [model, report]);
   const plotW = width - LABEL_W - 12;
   const axis = useMemo(() => {
     const times: number[] = [];
     for (const b of tl.activity) times.push(b.t, b.t + 60_000);
-    for (const m of tl.markers) times.push(m.t);
+    for (const m of tl.markers) if (m.lane !== 'anchor') times.push(m.t);
+    for (const a of anchors) times.push(a.t);
     for (const r of [...tl.pauses, ...tl.unfocused]) times.push(r.from, r.to);
     for (const s of tl.sessions) times.push(s.from, s.to);
     return buildAxis(times, plotW);
-  }, [tl, plotW]);
+  }, [tl, anchors, plotW]);
   const maxChars = Math.max(1, ...tl.activity.map((b) => b.typed + b.pasted + b.bulk + b.other));
   const height = LANES.length * LANE_H + 40;
   const X = (t: number) => LABEL_W + axis.x(t);
@@ -194,7 +223,18 @@ export function Timeline({ model }: { model: LogModel }) {
           })}
           {tl.pauses.map((r, i) => range(r, 'pause', `p${i}`))}
           {tl.unfocused.map((r, i) => range(r, 'unfocused', `u${i}`))}
+          {anchors.map((a, i) => {
+            const x = X(a.t);
+            const y = laneY('anchor');
+            return (
+              <g key={`a${i}`} class={`mark anchor ${a.status}`}>
+                <path d={`M${x} ${y - 6} L${x + 5} ${y} L${x} ${y + 6} L${x - 5} ${y} Z`} />
+                <title>{a.title}</title>
+              </g>
+            );
+          })}
           {tl.markers.map((m, i) => {
+            if (m.lane === 'anchor') return null;
             const lane = m.lane === 'bulk' ? 'paste' : m.lane;
             const x = X(m.t);
             const y = laneY(lane);
@@ -202,7 +242,7 @@ export function Timeline({ model }: { model: LogModel }) {
               m.lane === 'paste' || m.lane === 'bulk' ? Math.min(8, 3 + Math.log10(1 + (m.value ?? 1))) : 4;
             const cls = `mark ${m.lane}${m.failed ? ' failed' : ''}${m.f !== undefined ? ' clickable' : ''}`;
             const shape =
-              m.lane === 'save' || m.lane === 'anchor' ? (
+              m.lane === 'save' ? (
                 <line x1={x} x2={x} y1={y - 7} y2={y + 7} />
               ) : m.lane === 'run' ? (
                 <rect x={x - 4} y={y - 4} width={8} height={8} />

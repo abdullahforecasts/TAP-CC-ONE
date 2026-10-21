@@ -357,8 +357,8 @@ export class LogModelBuilder {
         break;
       case Kind.ANCHOR:
         this.marker(rec, 'anchor', `${rec.b.type} timestamp (${rec.b.status})`);
-        this.event(rec, 'integrity', `Timestamp from ${rec.b.src}`, {
-          detail: `${rec.b.type}, ${rec.b.status}`,
+        this.event(rec, 'integrity', `Timestamp from ${hostOf(rec.b.src)}`, {
+          detail: `${rec.b.type === 'rfc3161' ? 'RFC 3161 time-stamp authority' : `OpenTimestamps, ${rec.b.status}`} · for checkpoint ${rec.b.ck}`,
         });
         break;
       case Kind.RECOVERY:
@@ -709,8 +709,28 @@ export function weakenings(session: SessionInfo | undefined): Weakening[] {
       why: `Insertions up to ${bulk - 1} characters that did not come from the clipboard count as typed.`,
     });
   }
+  if (s['tap.anchoring.enabled'] === false) {
+    out.push({
+      setting: 'tap.anchoring.enabled',
+      value: 'false',
+      why: 'Checkpoints were not timestamped by independent services, so all times come from the computer clock.',
+    });
+  }
+  if (s['tap.record.terminalCommands'] === false) {
+    out.push({
+      setting: 'tap.record.terminalCommands',
+      value: 'false',
+      why: 'Commands run in the terminal (compiling, running the program) are not recorded.',
+    });
+  }
   if (session.liveShare) {
     out.push({ setting: 'Live Share', value: 'active', why: 'Other people could edit through Live Share.' });
   }
   return out;
+}
+
+/** "freetsa.org" from a service URL (the URL itself when it does not parse). */
+export function hostOf(url: string): string {
+  const m = url.match(/^[a-z][a-z0-9+.-]*:\/\/([^/:?#]+)/i);
+  return m ? m[1]! : url;
 }

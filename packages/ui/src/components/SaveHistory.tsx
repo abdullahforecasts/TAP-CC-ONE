@@ -1,6 +1,7 @@
-import type { Origin } from '@tap/core';
+import type { Origin, VerifyReport } from '@tap/core';
 import { useMemo, useState } from 'preact/hooks';
-import { fmtCount, fmtDateTime, fmtDuration, fmtPct, fmtSpan, ORIGIN_LABEL } from '../format.js';
+import { type ExistedBy, existedByLookup } from '../anchoring.js';
+import { fmtCount, fmtDateTime, fmtDuration, fmtPct, fmtSpan, fmtTime, ORIGIN_LABEL } from '../format.js';
 import { diffTexts } from '../model/diff.js';
 import { frameAt } from '../model/playback.js';
 import type { HistoryEntry, IntervalStats, LogModel, RunInfo } from '../model/types.js';
@@ -44,7 +45,17 @@ function runText(run: RunInfo): string {
   return `${run.kind}${name}: ${result}`;
 }
 
-function Entry({ entry, model, showPath }: { entry: HistoryEntry; model: LogModel; showPath: boolean }) {
+function Entry({
+  entry,
+  model,
+  showPath,
+  existedBy,
+}: {
+  entry: HistoryEntry;
+  model: LogModel;
+  showPath: boolean;
+  existedBy: ExistedBy | undefined;
+}) {
   const [open, setOpen] = useState(false);
   const [full, setFull] = useState(false);
   const track = entry.f === undefined ? undefined : model.tracks.find((t) => t.f === entry.f);
@@ -84,6 +95,14 @@ function Entry({ entry, model, showPath }: { entry: HistoryEntry; model: LogMode
           <span class={`run ${failed ? 'failed' : 'passed'}`}>{entry.runs.map(runText).join(', ')}</span>
         )}
         {since && <span class="arrival muted">{arrivalSummary(since)}</span>}
+        {existedBy && (
+          <span
+            class="existed"
+            title={`Independently timestamped by ${existedBy.authority}: this save existed by ${fmtDateTime(existedBy.time)}`}
+          >
+            ⧗ by {sameDay(entry.t, existedBy.time) ? fmtTime(existedBy.time) : fmtDateTime(existedBy.time)}
+          </span>
+        )}
       </button>
       {open && (
         <div class="entry-body">
@@ -102,6 +121,15 @@ function Entry({ entry, model, showPath }: { entry: HistoryEntry; model: LogMode
             </p>
           )}
           {entry.kind === 'run' && <p>{entry.runs.map(runText).join(', ')}</p>}
+          {existedBy ? (
+            <p>
+              Independently timestamped: existed by {fmtDateTime(existedBy.time)} ({existedBy.authority}).
+            </p>
+          ) : (
+            <p class="muted">
+              No independent timestamp after this point: its time comes from the computer clock.
+            </p>
+          )}
           {diff && <DiffView diff={diff} maxLines={full ? undefined : 60} />}
           <div class="actions">
             {track && entry.fromIndex !== undefined && entry.toIndex !== undefined && (
@@ -125,7 +153,7 @@ function Entry({ entry, model, showPath }: { entry: HistoryEntry; model: LogMode
   );
 }
 
-export function SaveHistory({ model }: { model: LogModel }) {
+export function SaveHistory({ model, report }: { model: LogModel; report?: VerifyReport }) {
   const [file, setFile] = useState<number | 'all'>('all');
   const entries = useMemo(
     () =>
@@ -136,6 +164,7 @@ export function SaveHistory({ model }: { model: LogModel }) {
     [model.history, file],
   );
   const files = model.files.filter((f) => model.history.some((h) => h.f === f.f));
+  const existed = useMemo(() => (report ? existedByLookup(report) : () => undefined), [report]);
   return (
     <section class="history" aria-label="Save History">
       <div class="toolbar">
@@ -167,10 +196,14 @@ export function SaveHistory({ model }: { model: LogModel }) {
       ) : (
         <ol class="entries">
           {entries.map((e) => (
-            <Entry key={e.id} entry={e} model={model} showPath={file === 'all'} />
+            <Entry key={e.id} entry={e} model={model} showPath={file === 'all'} existedBy={existed(e.seq)} />
           ))}
         </ol>
       )}
     </section>
   );
+}
+
+function sameDay(a: number, b: number): boolean {
+  return new Date(a).toDateString() === new Date(b).toDateString();
 }

@@ -68,6 +68,7 @@ test('shows the verdict of every conformance vector without errors', async ({ pa
     const dir = path.join(vectors, name);
     const expected = JSON.parse(fs.readFileSync(path.join(dir, 'expected.json'), 'utf8')) as {
       verdict: string;
+      trust?: unknown;
     };
     const bytes = [...fs.readFileSync(path.join(dir, 'log.codelog'))];
     const submission = readSubmission(path.join(dir, 'submission'));
@@ -94,7 +95,10 @@ test('shows the verdict of every conformance vector without errors', async ({ pa
       INTACT: 'Intact',
       INTACT_WITH_WARNINGS: 'Intact, with warnings',
       NOT_INTACT: 'Not intact',
-    }[expected.verdict]!;
+    }[
+      // The viewer trusts only real TSAs: tokens from the vectors' test TSA are shown as untrusted.
+      expected.trust ? 'INTACT_WITH_WARNINGS' : expected.verdict
+    ]!;
     await expect(page.getByTestId('verdict'), name).toHaveText(text);
     // Every tab renders.
     for (const tab of ['replay', 'timeline', 'composition', 'events', 'about', 'history']) {

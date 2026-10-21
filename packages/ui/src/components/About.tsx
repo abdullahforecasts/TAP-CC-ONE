@@ -1,3 +1,4 @@
+import { label, STATUS_TEXT } from '../anchoring.js';
 import { fmtBytes, fmtCount, fmtDateTime, fmtDuration } from '../format.js';
 import type { ViewData } from '../model/types.js';
 
@@ -41,9 +42,11 @@ export function About({ data }: { data: ViewData }) {
         </dd>
       </dl>
 
+      <Timestamps data={data} />
+
       <h3>Settings that weaken the evidence</h3>
       {model.weakenings.length === 0 ? (
-        <p>None — the recorder used its default settings.</p>
+        <p>None: the recorder used its default settings.</p>
       ) : (
         <ul>
           {model.weakenings.map((w) => (
@@ -94,5 +97,59 @@ export function About({ data }: { data: ViewData }) {
         the tool / AI insertions shown in the history.
       </p>
     </section>
+  );
+}
+
+function Timestamps({ data }: { data: ViewData }) {
+  const a = data.report.anchoring;
+  if (!a || a.anchors.length === 0) {
+    return (
+      <>
+        <h3>Independent timestamps</h3>
+        <p>
+          None. The times in this log come from the computer clock only (the recorder was offline,
+          timestamping was turned off, or the log was written by an older version).
+        </p>
+      </>
+    );
+  }
+  const byAuthority = new Map<string, number>();
+  for (const x of a.anchors) {
+    if (x.status !== 'valid' && x.status !== 'confirmed') continue;
+    byAuthority.set(label(x), (byAuthority.get(label(x)) ?? 0) + 1);
+  }
+  return (
+    <>
+      <h3>Independent timestamps</h3>
+      <p>
+        {a.anchoredCheckpoints} of {a.checkpoints} checkpoints were timestamped by services outside the
+        student's computer; {Math.floor(a.coverage * 100)}% of the edits are covered.
+        {byAuthority.size > 0 && ` By ${[...byAuthority].map(([who, n]) => `${who} (${n})`).join(', ')}.`} A
+        timestamp proves that everything before its checkpoint existed by that time; the computer clock cannot
+        move it.
+      </p>
+      <table class="anchors">
+        <thead>
+          <tr>
+            <th>Checkpoint</th>
+            <th>Service</th>
+            <th>Kind</th>
+            <th>Existed by</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {a.anchors.map((x) => (
+            <tr key={x.seq} title={x.message}>
+              <td>{x.ck}</td>
+              <td>{label(x)}</td>
+              <td>{x.type === 'rfc3161' ? 'RFC 3161' : 'OpenTimestamps'}</td>
+              <td>{x.time !== undefined ? fmtDateTime(x.time) : '–'}</td>
+              <td class={`status-${x.status}`}>{STATUS_TEXT[x.status]}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
   );
 }

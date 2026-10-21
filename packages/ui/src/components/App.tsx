@@ -102,9 +102,9 @@ export function App() {
         ))}
       </div>
       <main role="tabpanel">
-        {current === 'history' && <SaveHistory model={model} />}
+        {current === 'history' && <SaveHistory model={model} report={data.report} />}
         {current === 'replay' && <Replay model={model} />}
-        {current === 'timeline' && <Timeline model={model} />}
+        {current === 'timeline' && <Timeline model={model} report={data.report} />}
         {current === 'composition' && <Composition data={data} />}
         {current === 'events' && <Events model={model} />}
         {current === 'about' && <About data={data} />}

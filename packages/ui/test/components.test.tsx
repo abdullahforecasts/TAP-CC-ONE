@@ -2,7 +2,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LogWriter, verifyLog } from '@tap/core';
+import { createAnchorVerifier } from '@tap/anchor';
+import { testTsa } from '@tap/anchor/testing';
+import { contentHash, keyPairFromSeed, LogWriter, sha256, utf8, verifyLog } from '@tap/core';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -226,5 +228,69 @@ describe('composition maths', () => {
     expect(axis.x(24 * h + 8 * m)).toBeCloseTo(1000, 0);
     // Both active periods are drawn to the same scale: 9 and 8 minutes.
     expect(axis.segments[0]!.width / axis.segments[1]!.width).toBeCloseTo(9 / 8, 6);
+  });
+});
+
+describe('independent timestamps in the viewer', () => {
+  it('shows existed-by times, the timestamps table and timeline marks', () => {
+    const tsa = testTsa();
+    const key = keyPairFromSeed(sha256(utf8('ui-anchors')));
+    const w = LogWriter.create({ created: 1, tool: 't', logId: new Uint8Array(16) });
+    let t = Date.UTC(2026, 9, 21, 9, 0, 0);
+    const T = () => {
+      t += 60_000;
+      return { t, m: t };
+    };
+    w.append(
+      'SESSION_START',
+      {
+        sid: new Uint8Array(16),
+        pub: key.publicKey,
+        vsc: '1',
+        app: 'vscode',
+        os: 'linux',
+        ext: '0.3.0',
+        aiExt: [],
+        liveShare: false,
+        cfgHash: new Uint8Array(32),
+        settings: { 'tap.anchoring.enabled': true },
+      },
+      T(),
+    );
+    w.append('FILE_OP', { op: 'create', f: 0, path: 'a.c', origin: 'editor' }, T());
+    w.append('EDIT_BATCH', { f: 0, c: [[1, 0, 0, 'int x;\n']] }, T());
+    w.append('SAVE', { f: 0, h: contentHash('int x;\n'), n: 7 }, T());
+    const ck = w.appendCheckpoint(key.secretKey, T());
+    const genTime = t + 2000;
+    w.append(
+      'ANCHOR',
+      {
+        ck: ck.s,
+        d: ck.hash,
+        type: 'rfc3161',
+        src: 'https://freetsa.org/tsr',
+        tok: tsa.token({ digest: ck.hash, genTime }),
+        status: 'complete',
+      },
+      T(),
+    );
+    const res = new Engine(createAnchorVerifier({ roots: tsa.roots })).handle({
+      type: 'load',
+      bytes: w.drain(),
+    });
+    if (res.type !== 'view') throw new Error(res.message);
+    show(res.data);
+    expect(root.querySelector('.entry .existed')?.getAttribute('title')).toMatch(/TAP Test TSA/);
+    expect(root.querySelectorAll('.check')[3]!.className).toBe('check pass');
+    act(() => {
+      tab.value = 'about';
+    });
+    const row = [...root.querySelectorAll('table.anchors tbody tr')].map((r) => r.textContent);
+    expect(row).toHaveLength(1);
+    expect(row[0]).toMatch(/TAP Test TSA.*RFC 3161.*verified/);
+    act(() => {
+      tab.value = 'timeline';
+    });
+    expect(root.querySelector('.mark.anchor.valid title')?.textContent).toMatch(/existed by/);
   });
 });
