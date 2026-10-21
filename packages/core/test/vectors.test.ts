@@ -18,6 +18,8 @@ interface Expected {
   finalFiles: unknown[];
   composition: unknown;
   submittedPaths: string[];
+  /** Vectors with timestamp tokens: checked with a token verifier in packages/anchor. */
+  trust?: unknown;
 }
 
 const dirs = readdirSync(VECTORS, { withFileTypes: true })
@@ -37,7 +39,7 @@ function load(dir: string) {
 }
 
 describe('conformance vectors', () => {
-  it('has the Part 1 vector set', () => {
+  it('has the full vector set', () => {
     expect(dirs.map((d) => d.slice(0, 3))).toEqual([
       '001',
       '002',
@@ -51,6 +53,9 @@ describe('conformance vectors', () => {
       '010',
       '011',
       '012',
+      '013',
+      '014',
+      '015',
       '100',
       '101',
       '102',
@@ -63,6 +68,13 @@ describe('conformance vectors', () => {
   for (const dir of dirs) {
     it(dir, () => {
       const { expected, log, submission } = load(dir);
+      if (expected.trust) {
+        // Without a token verifier the anchors are only checked against their checkpoints.
+        const report = verifyLog(log);
+        expect(report.findings.filter((f) => f.severity === 'fail')).toEqual([]);
+        expect(report.findings.map((f) => f.code)).toContain('ANCHOR_TOKENS_NOT_VERIFIED');
+        return;
+      }
       const report = verifyLog(log, submission.length > 0 ? { submission } : {});
       expect(report.verdict).toBe(expected.verdict);
       const actual = report.findings

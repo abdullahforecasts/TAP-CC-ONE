@@ -1,0 +1,62 @@
+{
+  "id": "015",
+  "title": "Computer clock set an hour ahead",
+  "description": "Record times claim 10:00 but the TSA timestamped the checkpoint at 09:00 (UTC). A checkpoint cannot be written after it was timestamped, so the record times are wrong: the clock was set ahead or the times were made up.",
+  "verdict": "NOT_INTACT",
+  "findings": [
+    {
+      "code": "CLOCK_INCONSISTENT",
+      "severity": "fail",
+      "seq": 5
+    }
+  ],
+  "recordCount": 8,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "lab.c",
+      "length": 29,
+      "sha256": "2ad75d95660563887d8d3f1d0ae1dcf18c2379cbd83a5c72f5ab276351ee6949"
+    }
+  ],
+  "composition": {
+    "chars": 29,
+    "nonWs": 23,
+    "byOrigin": {
+      "typed": {
+        "chars": 29,
+        "nonWs": 23
+      }
+    }
+  },
+  "trust": {
+    "tsaRoots": [
+      "test-tsa-root.pem"
+    ],
+    "bitcoinHeaders": {}
+  },
+  "anchoring": {
+    "checkpoints": 1,
+    "anchoredCheckpoints": 1,
+    "coverage": 1,
+    "anchors": [
+      {
+        "seq": 6,
+        "ck": 5,
+        "t": 1791799205080,
+        "type": "rfc3161",
+        "src": "https://tsa.test.invalid/tsr",
+        "status": "valid",
+        "time": 1791795605080,
+        "authority": "TAP Test TSA"
+      }
+    ],
+    "existedBy": [
+      {
+        "seq": 5,
+        "time": 1791795605080
+      }
+    ]
+  },
+  "submittedPaths": []
+}

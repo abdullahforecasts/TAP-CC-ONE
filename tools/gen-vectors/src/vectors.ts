@@ -1,3 +1,5 @@
+import { findNode, mergeOts, parseOts, serializeOts } from '@tap/anchor';
+import { TEST_CALENDAR, testBitcoinUpgrade, testPendingOts, testTsa } from '@tap/anchor/testing';
 import {
   type ChangeTuple,
   concatBytes,
@@ -32,6 +34,11 @@ export interface VectorOutput {
   submission?: SubmittedFile[];
   /** Facts the generator learned while building (e.g. sequence numbers to expect). */
   facts?: Record<string, number>;
+  /**
+   * Verify timestamp tokens: trust the test TSA root (spec/vectors/test-tsa-root.pem) and these
+   * Bitcoin block headers (height → 80-byte header).
+   */
+  trust?: { bitcoinHeaders?: Record<number, Uint8Array> };
 }
 
 export interface VectorDef {
@@ -470,6 +477,167 @@ export const VECTORS: VectorDef[] = [
     check(r) {
       assert(r.keys.length === 2, 'two keys reported');
     },
+  },
+
+  {
+    id: '013',
+    slug: 'anchored-rfc3161',
+    title: 'Every checkpoint timestamped by a TSA',
+    description:
+      'Two checkpoints, each followed by an RFC 3161 timestamp token from the test TSA (trust its root: test-tsa-root.pem). The tokens prove each checkpoint, and every edit before it, existed by the TSA time.',
+    build() {
+      const tsa = testTsa();
+      const s = new Script({ id: '013-anchored-rfc3161' });
+      const anchor = (ck: number, delay: number) => {
+        const d = s.writer.headHash;
+        const genTime = s.now.t + delay;
+        s.tick(delay + 400);
+        s.rec('ANCHOR', {
+          ck,
+          d,
+          type: 'rfc3161',
+          src: 'https://tsa.test.invalid/tsr',
+          tok: tsa.token({ digest: d, genTime, serial: ck, nonce: new Uint8Array([1, 2, 3, ck & 0xff]) }),
+          status: 'complete',
+        });
+        return genTime;
+      };
+      s.startSession();
+      s.create(0, 'main.cpp');
+      s.type(0, 0, MAIN_CPP, 150);
+      s.save(0);
+      const ck1 = s.checkpoint();
+      const t1 = anchor(ck1, 1500);
+      s.type(0, MAIN_CPP.length, '// done\n', 200);
+      s.save(0);
+      const ck2 = s.checkpoint();
+      const t2 = anchor(ck2, 2500);
+      s.endSession();
+      return { log: s.bytes(), facts: { ck1, ck2, t1, t2 }, trust: {} };
+    },
+    verdict: 'INTACT',
+    findings: () => [],
+    check(r, facts) {
+      const a = r.anchoring;
+      assert(a, 'anchoring summary present');
+      assert(a.anchoredCheckpoints === 2 && a.checkpoints === 2, 'both checkpoints anchored');
+      assert(a.coverage === 1, 'every edit covered');
+      assert(
+        a.existedBy[0]?.seq === facts.ck1 && a.existedBy[0]?.time === facts.t1,
+        'checkpoint 1 existed by its TSA time',
+      );
+      assert(a.existedBy[1]?.time === facts.t2, 'checkpoint 2 existed by its TSA time');
+    },
+  },
+  {
+    id: '014',
+    slug: 'ots-pending-then-upgraded',
+    title: 'OpenTimestamps proof completed in a later session',
+    description:
+      'A pending OpenTimestamps proof is written right after checkpoint 1. The next session writes the upgraded proof that reaches a Bitcoin block (header given in expected.json under trust). Checkpoint 2 is still pending when the log ends, so the edits after checkpoint 1 are not covered yet.',
+    build() {
+      const s = new Script({ id: '014-ots-pending-then-upgraded' });
+      s.startSession();
+      s.create(0, 'q1.py');
+      s.type(0, 0, 'print(sum(range(10)))\n');
+      s.save(0);
+      const ck1 = s.checkpoint();
+      const d1 = s.writer.headHash;
+      // Bitcoin block times have one-second resolution.
+      const blockTime = Math.floor((s.now.t + 70 * 60_000) / 1000) * 1000;
+      const pending1 = testPendingOts(d1);
+      s.tick(900);
+      s.rec('ANCHOR', {
+        ck: ck1,
+        d: d1,
+        type: 'ots',
+        src: TEST_CALENDAR,
+        tok: pending1.token,
+        status: 'pending',
+      });
+      s.endSession();
+
+      s.tick(3 * 3_600_000);
+      s.startSession();
+      const height = 918_000;
+      const up = testBitcoinUpgrade(pending1.commitment, height, blockTime);
+      const proof = parseOts(pending1.token, d1);
+      mergeOts(findNode(proof, pending1.commitment)!, parseOts(up.upgrade, pending1.commitment));
+      s.tick(1200);
+      s.rec('ANCHOR', {
+        ck: ck1,
+        d: d1,
+        type: 'ots',
+        src: TEST_CALENDAR,
+        tok: serializeOts(proof),
+        status: 'upgraded',
+      });
+      s.type(0, 'print(sum(range(10)))\n'.length, 'print("ok")\n');
+      s.save(0);
+      const ck2 = s.checkpoint();
+      const d2 = s.writer.headHash;
+      s.tick(900);
+      s.rec('ANCHOR', {
+        ck: ck2,
+        d: d2,
+        type: 'ots',
+        src: TEST_CALENDAR,
+        tok: testPendingOts(d2).token,
+        status: 'pending',
+      });
+      s.endSession();
+      return {
+        log: s.bytes(),
+        facts: { ck1, blockTime, height },
+        trust: { bitcoinHeaders: { [height]: up.header } },
+      };
+    },
+    verdict: 'INTACT',
+    findings: () => [
+      { code: 'OTS_PENDING', severity: 'info' },
+      { code: 'ANCHOR_COVERAGE_PARTIAL', severity: 'info' },
+    ],
+    check(r, facts) {
+      const a = r.anchoring;
+      assert(a, 'anchoring summary present');
+      assert(a.anchoredCheckpoints === 1, 'only checkpoint 1 is confirmed');
+      assert(a.existedBy[0]?.seq === facts.ck1 && a.existedBy[0]?.time === facts.blockTime, 'block time');
+      const statuses = a.anchors.map((x) => x.status).join(',');
+      assert(statuses === 'pending,confirmed,pending', `anchor statuses ${statuses}`);
+      assert(a.anchors[1]?.bitcoinHeight === facts.height, 'block height reported');
+    },
+  },
+  {
+    id: '015',
+    slug: 'clock-ahead',
+    title: 'Computer clock set an hour ahead',
+    description:
+      'Record times claim 10:00 but the TSA timestamped the checkpoint at 09:00 (UTC). A checkpoint cannot be written after it was timestamped, so the record times are wrong: the clock was set ahead or the times were made up.',
+    build() {
+      const tsa = testTsa();
+      const s = new Script({ id: '015-clock-ahead' });
+      s.tick(3_600_000);
+      s.startSession();
+      s.create(0, 'lab.c');
+      s.type(0, 0, 'int main(void) { return 0; }\n');
+      s.save(0);
+      const ck = s.checkpoint();
+      const d = s.writer.headHash;
+      const genTime = s.now.t - 3_600_000 + 1000;
+      s.tick(1000);
+      s.rec('ANCHOR', {
+        ck,
+        d,
+        type: 'rfc3161',
+        src: 'https://tsa.test.invalid/tsr',
+        tok: tsa.token({ digest: d, genTime }),
+        status: 'complete',
+      });
+      s.endSession();
+      return { log: s.bytes(), facts: { ck }, trust: {} };
+    },
+    verdict: 'NOT_INTACT',
+    findings: (f) => [{ code: 'CLOCK_INCONSISTENT', severity: 'fail', seq: f.ck! }],
   },
 
   // ------------------------------------------------------------------------------------------

@@ -10,9 +10,14 @@ Each folder holds:
 - `submission/` (optional): the submitted code to compare against the final logged state
 
 Vectors 001–012 contain no third-party timestamps, so their verdict includes the `NO_ANCHORS`
-warning ("Intact" in design.md Appendix C means: no integrity failures). Anchored vectors
-(013–015) and the batch-check vector (106) are added with the anchoring and verifier parts.
-Vector 102 uses placeholder timestamp tokens; it fails on the anchored digests alone.
+warning ("Intact" in design.md Appendix C means: no integrity failures). Vector 102 uses
+placeholder timestamp tokens; it fails on the anchored digests alone.
+
+Vectors 013–015 carry real RFC 3161 and OpenTimestamps proofs from a deterministic test
+authority. Their `expected.json` has a `trust` section: verify the tokens trusting only
+`test-tsa-root.pem` (never trust it anywhere else) and the listed Bitcoin block headers (hex,
+80 bytes, by height). The `anchoring` section is the expected summary. The batch-check
+vector (106) is added with the verifier part.
 
 | # | Vector | Verdict |
 |---|---|---|
@@ -28,6 +33,9 @@ Vector 102 uses placeholder timestamp tokens; it fails on the anchored digests a
 | 010 | [Create, rename and delete files](010-file-operations/) | INTACT WITH WARNINGS |
 | 011 | [Crash, truncated tail, recovery](011-recovery/) | INTACT WITH WARNINGS |
 | 012 | [Signing key replaced between sessions](012-key-rotation/) | INTACT WITH WARNINGS |
+| 013 | [Every checkpoint timestamped by a TSA](013-anchored-rfc3161/) | INTACT |
+| 014 | [OpenTimestamps proof completed in a later session](014-ots-pending-then-upgraded/) | INTACT |
+| 015 | [Computer clock set an hour ahead](015-clock-ahead/) | NOT INTACT |
 | 100 | [One byte flipped inside a block](100-byte-flipped/) | NOT INTACT |
 | 101 | [Record edited and checksum recomputed](101-record-modified/) | NOT INTACT |
 | 102 | [Record removed and whole chain rebuilt and re-signed](102-chain-rebuilt/) | NOT INTACT |

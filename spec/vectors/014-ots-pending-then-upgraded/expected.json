@@ -1,0 +1,88 @@
+{
+  "id": "014",
+  "title": "OpenTimestamps proof completed in a later session",
+  "description": "A pending OpenTimestamps proof is written right after checkpoint 1. The next session writes the upgraded proof that reaches a Bitcoin block (header given in expected.json under trust). Checkpoint 2 is still pending when the log ends, so the edits after checkpoint 1 are not covered yet.",
+  "verdict": "INTACT",
+  "findings": [
+    {
+      "code": "OTS_PENDING",
+      "severity": "info"
+    },
+    {
+      "code": "ANCHOR_COVERAGE_PARTIAL",
+      "severity": "info"
+    }
+  ],
+  "recordCount": 15,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "q1.py",
+      "length": 34,
+      "sha256": "3dc2f5e7fb989624274187eb2ffd808a1f9bf6cd7b4fdefe3ee3ea49f9e2a3f4"
+    }
+  ],
+  "composition": {
+    "chars": 34,
+    "nonWs": 32,
+    "byOrigin": {
+      "typed": {
+        "chars": 34,
+        "nonWs": 32
+      }
+    }
+  },
+  "trust": {
+    "tsaRoots": [
+      "test-tsa-root.pem"
+    ],
+    "bitcoinHeaders": {
+      "918000": "0400000000000000000000000000000000000000000000000000000000000000000000007f43edb793bc9947676d3ab342f6f77193b0548db35932d707bc0b53e21a55bcfbb1cc6a0000000000000000"
+    }
+  },
+  "anchoring": {
+    "checkpoints": 2,
+    "anchoredCheckpoints": 1,
+    "coverage": 0.6666666666666666,
+    "anchors": [
+      {
+        "seq": 6,
+        "ck": 5,
+        "t": 1791795604140,
+        "type": "ots",
+        "src": "https://calendar.test.invalid",
+        "status": "pending",
+        "authority": "https://calendar.test.invalid",
+        "message": "waiting for a Bitcoin block"
+      },
+      {
+        "seq": 9,
+        "ck": 5,
+        "t": 1791806405840,
+        "type": "ots",
+        "src": "https://calendar.test.invalid",
+        "status": "confirmed",
+        "time": 1791799803000,
+        "authority": "Bitcoin block 918000",
+        "bitcoinHeight": 918000
+      },
+      {
+        "seq": 13,
+        "ck": 12,
+        "t": 1791806408580,
+        "type": "ots",
+        "src": "https://calendar.test.invalid",
+        "status": "pending",
+        "authority": "https://calendar.test.invalid",
+        "message": "waiting for a Bitcoin block"
+      }
+    ],
+    "existedBy": [
+      {
+        "seq": 5,
+        "time": 1791799803000
+      }
+    ]
+  },
+  "submittedPaths": []
+}

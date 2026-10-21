@@ -7,9 +7,12 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { type SubmittedFile, utf8, type VerifyReport, verifyLog } from '@tap/core';
+import { createAnchorVerifier } from '@tap/anchor';
+import { testTsa } from '@tap/anchor/testing';
+import { type SubmittedFile, toHex, utf8, type VerifyOptions, type VerifyReport, verifyLog } from '@tap/core';
 import { type ExpectedFinding, VECTORS, type VectorDef } from './vectors.js';
 
+const TEST_ROOT = 'test-tsa-root.pem';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../spec/vectors');
 
 interface GeneratedFile {
@@ -50,7 +53,16 @@ function compareFindings(def: VectorDef, report: VerifyReport, expected: Expecte
 function generate(def: VectorDef): GeneratedFile[] {
   const out = def.build();
   const facts = out.facts ?? {};
-  const options = out.submission ? { submission: out.submission } : {};
+  const options: VerifyOptions = out.submission ? { submission: out.submission } : {};
+  if (out.trust) {
+    const headers = Object.entries(out.trust.bitcoinHeaders ?? {}).map(
+      ([h, header]) => [Number(h), header] as const,
+    );
+    options.anchorVerifier = createAnchorVerifier({
+      roots: testTsa().roots,
+      bitcoinHeaders: new Map(headers),
+    });
+  }
   const report = verifyLog(out.log, options);
   if (report.verdict !== def.verdict) {
     throw new Error(
@@ -71,6 +83,18 @@ function generate(def: VectorDef): GeneratedFile[] {
     recordCount: report.recordCount,
     finalFiles: report.finalFiles,
     composition: report.composition ?? null,
+    // Verify timestamp tokens with these trust anchors (paths relative to spec/vectors/).
+    ...(out.trust
+      ? {
+          trust: {
+            tsaRoots: [TEST_ROOT],
+            bitcoinHeaders: Object.fromEntries(
+              Object.entries(out.trust.bitcoinHeaders ?? {}).map(([h, b]) => [h, toHex(b)]),
+            ),
+          },
+          anchoring: report.anchoring ?? null,
+        }
+      : {}),
     // Paths exactly as submitted (may use '\\'); the files live under submission/ with '/' paths.
     submittedPaths: (out.submission ?? []).map((f: SubmittedFile) => f.path),
   };
@@ -101,9 +125,14 @@ Each folder holds:
 - \`submission/\` (optional): the submitted code to compare against the final logged state
 
 Vectors 001–012 contain no third-party timestamps, so their verdict includes the \`NO_ANCHORS\`
-warning ("Intact" in design.md Appendix C means: no integrity failures). Anchored vectors
-(013–015) and the batch-check vector (106) are added with the anchoring and verifier parts.
-Vector 102 uses placeholder timestamp tokens; it fails on the anchored digests alone.
+warning ("Intact" in design.md Appendix C means: no integrity failures). Vector 102 uses
+placeholder timestamp tokens; it fails on the anchored digests alone.
+
+Vectors 013–015 carry real RFC 3161 and OpenTimestamps proofs from a deterministic test
+authority. Their \`expected.json\` has a \`trust\` section: verify the tokens trusting only
+\`${TEST_ROOT}\` (never trust it anywhere else) and the listed Bitcoin block headers (hex,
+80 bytes, by height). The \`anchoring\` section is the expected summary. The batch-check
+vector (106) is added with the verifier part.
 
 | # | Vector | Verdict |
 |---|---|---|
@@ -114,7 +143,7 @@ ${rows.join('\n')}
 
 function main(): void {
   const check = process.argv.includes('--check');
-  const files: GeneratedFile[] = [index()];
+  const files: GeneratedFile[] = [index(), { path: TEST_ROOT, bytes: utf8(testTsa().rootPem) }];
   for (const def of VECTORS) files.push(...generate(def));
 
   if (check) {

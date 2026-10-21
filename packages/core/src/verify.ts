@@ -6,6 +6,7 @@ import { genesisHash, recordHash } from './hash.js';
 import { toLogPath } from './paths.js';
 import type { Composition } from './provenance.js';
 import { type ParsedLog, readLog } from './reader.js';
+import type { AnchorBody, AnyRecord } from './records.js';
 import { Replayer, type Severity } from './replay.js';
 import { contentHash } from './text.js';
 
@@ -28,9 +29,61 @@ export interface SubmittedFile {
   content: Uint8Array | string;
 }
 
+/** Result of checking one ANCHOR token (supplied by @tap/anchor; the core does no X.509/CMS). */
+export interface AnchorCheck {
+  /**
+   * valid: an RFC 3161 token signed by a trusted TSA; untrusted: correct but from a TSA that is
+   * not trusted; confirmed: an OpenTimestamps proof down to a Bitcoin block; pending: an
+   * OpenTimestamps proof that is still waiting at a calendar; invalid: the token is wrong.
+   */
+  status: 'valid' | 'untrusted' | 'confirmed' | 'pending' | 'invalid';
+  /** Independent time: the TSA's genTime, or the Bitcoin block time when known (unix ms). */
+  time?: number;
+  /** Who vouches for the time (TSA certificate name, or "Bitcoin block N"). */
+  authority?: string;
+  bitcoinHeight?: number;
+  problem?: string;
+  message?: string;
+}
+
+/** Checks the token of an ANCHOR record whose digest already matches its checkpoint. */
+export type AnchorVerifier = (anchor: AnchorBody) => AnchorCheck;
+
 export interface VerifyOptions {
   /** The submitted code to compare with the final logged state (stage 6). */
   submission?: readonly SubmittedFile[];
+  /** Verifies timestamp tokens (stage 4). Without it, tokens are reported as not verified. */
+  anchorVerifier?: AnchorVerifier;
+}
+
+/** One ANCHOR record as the verifier saw it. */
+export interface AnchorInfo {
+  seq: number;
+  ck: number;
+  /** Time of the ANCHOR record itself (self-asserted). */
+  t: number;
+  type: 'rfc3161' | 'ots';
+  src: string;
+  status: AnchorCheck['status'] | 'unverified';
+  time?: number;
+  authority?: string;
+  bitcoinHeight?: number;
+  message?: string;
+}
+
+/** Independent timestamps over the log (design §9.7). */
+export interface AnchoringSummary {
+  checkpoints: number;
+  /** Checkpoints with at least one valid timestamp (RFC 3161 or a time-checked Bitcoin proof). */
+  anchoredCheckpoints: number;
+  /** Share (0–1) of edit records followed by an anchored checkpoint. */
+  coverage: number;
+  anchors: AnchorInfo[];
+  /**
+   * For each anchored checkpoint, in log order: the earliest independent time vouching for it.
+   * Every record up to `seq` existed by the minimum `time` of this entry and all later ones.
+   */
+  existedBy: Array<{ seq: number; time: number }>;
 }
 
 export interface FinalFile {
@@ -72,10 +125,15 @@ export interface VerifyReport {
   finalFiles: FinalFile[];
   /** Final-code composition: all live files, or only the matched submitted files. */
   composition?: Composition;
+  anchoring?: AnchoringSummary;
 }
 
 const MAX_CLOCK_FINDINGS = 10;
 const CLOCK_TOLERANCE_MS = 2000;
+/** A checkpoint time more than this after its independent time means the clock ran ahead (§9.7). */
+export const ANCHOR_FUTURE_TOLERANCE_MS = 120_000;
+/** Anchored more than this after the checkpoint: "anchored late (offline?)". */
+export const ANCHOR_LATE_MS = 15 * 60_000;
 
 function verdictOf(findings: readonly Finding[]): Verdict {
   if (findings.some((f) => f.severity === 'fail')) return 'NOT_INTACT';
@@ -100,8 +158,9 @@ function emptyStats(): LogStats {
 }
 
 /**
- * Verifies a log (design §13.2, stages 1–6 except third-party timestamp tokens, which arrive with
- * the anchoring part). Never throws for bad input: every problem becomes a finding.
+ * Verifies a log (design §13.2, stages 1–6). Timestamp tokens are checked when an
+ * `anchorVerifier` is given (see @tap/anchor). Never throws for bad input: every problem becomes
+ * a finding.
  */
 export function verifyLog(bytes: Uint8Array, options: VerifyOptions = {}): VerifyReport {
   const findings: Finding[] = [];
@@ -279,44 +338,9 @@ export function verifyLog(bytes: Uint8Array, options: VerifyOptions = {}): Verif
     });
   }
 
-  // ---- Stage 4: anchors (internal consistency) ------------------------------------------------
-  for (const rec of records) {
-    if (rec.k !== Kind.ANCHOR) continue;
-    report.stats.anchors++;
-    const target = records[rec.b.ck];
-    if (rec.b.ck >= rec.s || !target || target.k !== Kind.CHECKPOINT) {
-      add({
-        stage: 'anchors',
-        severity: 'fail',
-        code: 'ANCHOR_REF_INVALID',
-        message: `anchor refers to record ${rec.b.ck}, which is not an earlier checkpoint`,
-        seq: rec.s,
-      });
-    } else if (!bytesEqual(rec.b.d, hashes[rec.b.ck]!)) {
-      add({
-        stage: 'anchors',
-        severity: 'fail',
-        code: 'ANCHOR_DIGEST_MISMATCH',
-        message: `anchored digest does not match checkpoint ${rec.b.ck}: records before it were changed after it was timestamped`,
-        seq: rec.s,
-      });
-    }
-  }
-  if (report.stats.anchors === 0) {
-    add({
-      stage: 'anchors',
-      severity: 'warn',
-      code: 'NO_ANCHORS',
-      message: 'no third-party timestamps: record times are self-asserted',
-    });
-  } else if (!findings.some((f) => f.stage === 'anchors' && f.severity === 'fail')) {
-    add({
-      stage: 'anchors',
-      severity: 'info',
-      code: 'ANCHOR_TOKENS_NOT_VERIFIED',
-      message: `${report.stats.anchors} anchor(s) reference their checkpoints correctly; timestamp tokens are not verified by this version`,
-    });
-  }
+  // ---- Stage 4: anchors -----------------------------------------------------------------------
+  report.anchoring = verifyAnchors(records, hashes, options.anchorVerifier, add);
+  report.stats.anchors = records.filter((r) => r.k === Kind.ANCHOR).length;
 
   // ---- Stage 5: replay ------------------------------------------------------------------------
   const replayer = new Replayer({ provenance: true });
@@ -585,4 +609,222 @@ function compareSubmission(
     });
   }
   return matched;
+}
+
+const fmtTime = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+
+/** Stage 4 (spec §9 step 4, design §9.7). */
+function verifyAnchors(
+  records: readonly AnyRecord[],
+  hashes: readonly Uint8Array[],
+  verifier: AnchorVerifier | undefined,
+  add: (f: Finding) => void,
+): AnchoringSummary {
+  const checkpoints = records.filter((r) => r.k === Kind.CHECKPOINT);
+  const summary: AnchoringSummary = {
+    checkpoints: checkpoints.length,
+    anchoredCheckpoints: 0,
+    coverage: 0,
+    anchors: [],
+    existedBy: [],
+  };
+  /** Best independent time per checkpoint sequence number. */
+  const best = new Map<number, number>();
+  /** Earliest RFC 3161 time per checkpoint (Bitcoin confirmations are slow by nature). */
+  const bestTsa = new Map<number, number>();
+  /** Checkpoints with a pending OpenTimestamps proof, and those with a confirmed one. */
+  const pendingCks = new Set<number>();
+  const confirmedCks = new Set<number>();
+  let refFailures = 0;
+  let invalid = 0;
+  for (const rec of records) {
+    if (rec.k !== Kind.ANCHOR) continue;
+    const target = records[rec.b.ck];
+    if (rec.b.ck >= rec.s || !target || target.k !== Kind.CHECKPOINT) {
+      refFailures++;
+      add({
+        stage: 'anchors',
+        severity: 'fail',
+        code: 'ANCHOR_REF_INVALID',
+        message: `anchor refers to record ${rec.b.ck}, which is not an earlier checkpoint`,
+        seq: rec.s,
+      });
+      continue;
+    }
+    if (!bytesEqual(rec.b.d, hashes[rec.b.ck]!)) {
+      refFailures++;
+      add({
+        stage: 'anchors',
+        severity: 'fail',
+        code: 'ANCHOR_DIGEST_MISMATCH',
+        message: `anchored digest does not match checkpoint ${rec.b.ck}: records before it were changed after it was timestamped`,
+        seq: rec.s,
+      });
+      continue;
+    }
+    const info: AnchorInfo = {
+      seq: rec.s,
+      ck: rec.b.ck,
+      t: rec.t,
+      type: rec.b.type,
+      src: rec.b.src,
+      status: 'unverified',
+    };
+    summary.anchors.push(info);
+    if (!verifier) continue;
+    let check: AnchorCheck;
+    try {
+      check = verifier(rec.b);
+    } catch (e) {
+      check = { status: 'invalid', problem: 'TOKEN_MALFORMED', message: (e as Error).message };
+    }
+    info.status = check.status;
+    if (check.time !== undefined) info.time = check.time;
+    if (check.authority !== undefined) info.authority = check.authority;
+    if (check.bitcoinHeight !== undefined) info.bitcoinHeight = check.bitcoinHeight;
+    if (check.message !== undefined) info.message = check.message;
+    if (check.status === 'invalid') {
+      invalid++;
+      add({
+        stage: 'anchors',
+        severity: 'fail',
+        code: 'ANCHOR_TOKEN_INVALID',
+        message: `timestamp from ${rec.b.src} for checkpoint ${rec.b.ck} is not valid: ${check.message ?? check.problem ?? 'invalid token'}`,
+        seq: rec.s,
+      });
+    } else if (check.status === 'untrusted') {
+      add({
+        stage: 'anchors',
+        severity: 'warn',
+        code: 'ANCHOR_TSA_UNTRUSTED',
+        message: `timestamp for checkpoint ${rec.b.ck}: ${check.message ?? 'TSA not trusted'}`,
+        seq: rec.s,
+      });
+    } else if (check.status === 'pending') {
+      pendingCks.add(rec.b.ck);
+    } else if (check.status === 'confirmed') {
+      confirmedCks.add(rec.b.ck);
+    }
+    if ((check.status === 'valid' || check.status === 'confirmed') && check.time !== undefined) {
+      const prev = best.get(rec.b.ck);
+      if (prev === undefined || check.time < prev) best.set(rec.b.ck, check.time);
+      if (rec.b.type === 'rfc3161') {
+        const prevTsa = bestTsa.get(rec.b.ck);
+        if (prevTsa === undefined || check.time < prevTsa) bestTsa.set(rec.b.ck, check.time);
+      }
+    }
+  }
+
+  if (summary.anchors.length === 0 && refFailures === 0) {
+    add({
+      stage: 'anchors',
+      severity: 'warn',
+      code: 'NO_ANCHORS',
+      message: 'no third-party timestamps: record times are self-asserted',
+    });
+    return summary;
+  }
+  if (!verifier) {
+    if (refFailures === 0) {
+      add({
+        stage: 'anchors',
+        severity: 'info',
+        code: 'ANCHOR_TOKENS_NOT_VERIFIED',
+        message: `${summary.anchors.length} anchor(s) reference their checkpoints correctly; timestamp tokens were not verified`,
+      });
+    }
+    return summary;
+  }
+
+  // Time consistency (design §9.7).
+  let late = 0;
+  let lastTime: number | undefined;
+  let orderWarned = false;
+  for (const ck of checkpoints) {
+    const g = best.get(ck.s);
+    if (g === undefined) continue;
+    summary.existedBy.push({ seq: ck.s, time: g });
+    if (ck.t > g + ANCHOR_FUTURE_TOLERANCE_MS) {
+      add({
+        stage: 'anchors',
+        severity: 'fail',
+        code: 'CLOCK_INCONSISTENT',
+        message: `checkpoint ${ck.s} claims ${fmtTime(ck.t)} UTC but was independently timestamped at ${fmtTime(g)} UTC: the computer clock was set ahead, or the time was made up`,
+        seq: ck.s,
+      });
+    } else {
+      const tsa = bestTsa.get(ck.s);
+      if (tsa !== undefined && tsa - ck.t > ANCHOR_LATE_MS) late++;
+    }
+    if (lastTime !== undefined && g + CLOCK_TOLERANCE_MS < lastTime && !orderWarned) {
+      orderWarned = true;
+      add({
+        stage: 'anchors',
+        severity: 'warn',
+        code: 'ANCHOR_TIME_ORDER',
+        message: `checkpoint ${ck.s} was timestamped before an earlier checkpoint`,
+        seq: ck.s,
+      });
+    }
+    lastTime = Math.max(lastTime ?? g, g);
+  }
+  summary.anchoredCheckpoints = summary.existedBy.length;
+
+  // Coverage: edit records that have an anchored checkpoint after them.
+  const lastAnchored =
+    summary.existedBy.length > 0 ? summary.existedBy[summary.existedBy.length - 1]!.seq : -1;
+  let edits = 0;
+  let covered = 0;
+  for (const rec of records) {
+    if (rec.k !== Kind.EDIT_BATCH) continue;
+    edits++;
+    if (rec.s < lastAnchored) covered++;
+  }
+  summary.coverage = edits === 0 ? (summary.anchoredCheckpoints > 0 ? 1 : 0) : covered / edits;
+  const pct = `${Math.floor(summary.coverage * 100)}%`;
+
+  if (late > 0) {
+    add({
+      stage: 'anchors',
+      severity: 'info',
+      code: 'ANCHORED_LATE',
+      message: `${late} checkpoint(s) were timestamped more than 15 minutes after they were written (offline?)`,
+    });
+  }
+  // A pending proof that was later upgraded in the same log is not outstanding.
+  const pending = [...pendingCks].filter((ck) => !confirmedCks.has(ck)).length;
+  if (pending > 0) {
+    add({
+      stage: 'anchors',
+      severity: 'info',
+      code: 'OTS_PENDING',
+      message: `${pending} checkpoint(s) have OpenTimestamps proofs still waiting for a Bitcoin block`,
+    });
+  }
+  if (summary.anchoredCheckpoints === 0) {
+    if (invalid === 0) {
+      add({
+        stage: 'anchors',
+        severity: 'warn',
+        code: 'NO_VALID_ANCHORS',
+        message: 'no checkpoint has a verified third-party timestamp: record times are self-asserted',
+      });
+    }
+  } else if (invalid === 0) {
+    add({
+      stage: 'anchors',
+      severity: 'pass',
+      code: 'ANCHORS_OK',
+      message: `${summary.anchoredCheckpoints} of ${summary.checkpoints} checkpoints independently timestamped; ${pct} of edits covered`,
+    });
+    if (summary.coverage < 0.95 && edits > 0) {
+      add({
+        stage: 'anchors',
+        severity: 'info',
+        code: 'ANCHOR_COVERAGE_PARTIAL',
+        message: `${pct} of edits are covered by a third-party timestamp; the times of the rest rely on the computer clock`,
+      });
+    }
+  }
+  return summary;
 }

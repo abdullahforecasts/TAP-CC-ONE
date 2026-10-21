@@ -219,7 +219,23 @@ sig = Ed25519.sign(secretKey, msg)
 
 ### 6.4 Anchors
 
-An ANCHOR's `ck` is the sequence number of an earlier CHECKPOINT, and `d` MUST equal `H(that checkpoint record)`. `tok` carries the third-party proof (an RFC 3161 TimeStampToken, or an OpenTimestamps proof) over `d`. Token verification is specified with the anchoring part.
+An ANCHOR's `ck` is the sequence number of an earlier CHECKPOINT, and `d` MUST equal `H(that checkpoint record)`. `tok` carries the third-party proof over `d`. `src` names the service that issued it (informative: verification never depends on it). A checkpoint may have any number of anchors, written by the same session or a later one.
+
+**`type` rfc3161.** `tok` is a DER TimeStampToken (RFC 3161 §2.4.2: a CMS ContentInfo with SignedData whose content is a TSTInfo). `status` is `complete`. A token is **valid** when all of the following hold, **invalid** when any of 1 to 6 fails, and **untrusted** when only 7 fails:
+
+1. It parses as DER (definite lengths, minimal length encodings) with exactly one SignerInfo, and the encapsulated content type is id-ct-TSTInfo.
+2. TSTInfo `version` is 1, its `messageImprint` uses SHA-256, and the imprint equals `d`.
+3. If signed attributes are present, they contain content-type id-ct-TSTInfo and a message-digest equal to the digest of the encapsulated TSTInfo; an ESS signing-certificate (SHA-1) or signing-certificate-v2 attribute, when present, has a first hash that matches the signer certificate.
+4. The signer certificate is the one the SignerInfo sid identifies among the token's certificates.
+5. The signature verifies with the signer key, over the DER of the signed attributes re-tagged as SET OF (or over the TSTInfo when there are none). Accepted: RSA PKCS #1 v1.5 and PSS with SHA-1, SHA-256, SHA-384 or SHA-512 (keys of at least 2048 bits) and ECDSA on P-256, P-384 or P-521.
+6. The signer certificate has the extended key usage id-kp-timeStamping, every certificate on the path is within its validity period at `genTime`, and every certificate signature on the path verifies (issuers being CA certificates).
+7. The path from the signer through the token's certificates (at most 8 steps) reaches a certificate the verifier trusts. Trusted certificates are taken as given.
+
+The token's **time** is TSTInfo `genTime`. Revocation is not checked (TSA certificates are rarely revoked, and offline verification is a goal).
+
+**`type` ots.** `tok` is an OpenTimestamps detached proof without the file header: the serialised timestamp tree for message `d` (operations append `0xf0`, prepend `0xf1`, reverse `0xf2`, hexlify `0xf3`, sha1 `0x02`, ripemd160 `0x03`, sha256 `0x08`, keccak256 `0x67`; attestations tag `0x00`; fork marker `0xff`). Limits: messages at most 4096 bytes, depth at most 256, at most 10 000 nodes. `status` is `pending` (only calendar attestations) or `upgraded` (at least one Bitcoin attestation). A proof is **confirmed** when it has a Bitcoin attestation. When the verifier knows the 80-byte header of that block, the attested message MUST equal header bytes 36 to 68 (the Merkle root, as stored), otherwise the proof is invalid; the proof's **time** is then the header's block time (bytes 68 to 72, little-endian seconds). Without the header, a confirmed proof has no time. A proof with only pending attestations is **pending**; one with no attestation is invalid.
+
+A checkpoint is **anchored** when at least one of its anchors is valid or confirmed with a time. Its **existed-by** time is the earliest such time.
 
 ## 7. Replay
 
@@ -269,7 +285,12 @@ Stages, in order:
 1. **parse**: §2–§5. Any error is a `fail` with the error code and stops verification.
 2. **chain**: `s` MUST equal the record's index (SEQ_GAP), `p` MUST link (CHAIN_BROKEN, reported at the first record whose link fails), and record 0 MUST be SESSION_START (FIRST_RECORD_NOT_SESSION_START). Any failure stops verification.
 3. **signatures**: every CHECKPOINT signature verifies under the active session key (BAD_SIGNATURE, fail). A SESSION_START whose key differs from the previous one is KEY_CHANGED (warn) unless announced by a KEY_ROTATION; a KEY_ROTATION is KEY_ROTATED (warn). No checkpoints at all is NO_CHECKPOINTS (warn). EDIT_BATCH records after the last checkpoint give UNCHECKPOINTED_TAIL (info).
-4. **anchors**: ANCHOR_REF_INVALID (fail) when `ck` is not an earlier CHECKPOINT; ANCHOR_DIGEST_MISMATCH (fail) when `d` ≠ H(checkpoint). No anchors at all is NO_ANCHORS (warn): record times are then self-asserted.
+4. **anchors**: ANCHOR_REF_INVALID (fail) when `ck` is not an earlier CHECKPOINT; ANCHOR_DIGEST_MISMATCH (fail) when `d` ≠ H(checkpoint). No anchors at all is NO_ANCHORS (warn): record times are then self-asserted. A verifier without token verification reports ANCHOR_TOKENS_NOT_VERIFIED (info) and stops this stage. Otherwise each remaining token is checked as in §6.4: ANCHOR_TOKEN_INVALID (fail), ANCHOR_TSA_UNTRUSTED (warn). Then, for every anchored checkpoint in sequence order:
+   - CLOCK_INCONSISTENT (fail) when the checkpoint's `t` is more than 120 s after its existed-by time: a record cannot be written after it was timestamped.
+   - ANCHOR_TIME_ORDER (warn, at most once) when its existed-by time is more than 2 s before that of an earlier checkpoint.
+   - It counts as late when its earliest valid RFC 3161 time is more than 15 minutes after its `t` (Bitcoin confirmations are slow by nature and do not count); any late checkpoint gives one ANCHORED_LATE (info).
+
+   **Coverage** is the share of EDIT_BATCH records that come before the last anchored checkpoint. Also reported: OTS_PENDING (info) when a checkpoint has a pending OpenTimestamps proof and no confirmed one; NO_VALID_ANCHORS (warn) when no checkpoint is anchored and no token is invalid; ANCHORS_OK (pass) otherwise, with ANCHOR_COVERAGE_PARTIAL (info) when coverage is below 95 %.
 5. **replay**: §7, stopping at the first failure. Before applying each CHECKPOINT, the state digest and live-file count MUST equal its `state` and `files` (CHECKPOINT_STATE_MISMATCH, fail). Also reported: SESSION_NOT_CLOSED (info: a SESSION_START or RECOVERY while a session is open), RECORD_OUTSIDE_SESSION (warn: any record other than RECOVERY or KEY_ROTATION between SESSION_END and the next SESSION_START), SESSION_ID_MISMATCH (warn), CLOCK_BACKWARDS (warn: `t` decreases by more than 2 s), MONO_BACKWARDS (warn: `m` decreases within a session; at most 10 CLOCK_BACKWARDS and MONO_BACKWARDS findings in total), CLOCK_ANOMALY (warn), RECOVERED (warn), PAUSED (info), EXTERNAL_WITHOUT_SNAPSHOT (warn).
 6. **submission** (when submitted files are given): each submitted path (with `\` converted to `/` and a leading `./` removed) is compared by contentHash with the live file of that path. SUBMISSION_MISMATCH and SUBMISSION_NOT_UTF8 are `fail`; UNTRACKED_SUBMITTED_FILE is `warn`; SUBMISSION_FILE_MISSING (logged but not submitted) is `info`.
 
@@ -293,4 +314,7 @@ The chain detects any change to a record that has a later record linking to it. 
 | Snapshot replacement | whole file gets the snapshot's origin | only the changed region does | Keeps typed code attributed to the student when one line changes outside the editor. |
 | Change that replaces text (tool or AI rewriting a whole file) | everything inserted gets the change's origin | only the lines that really differ do (`minimalEdits`) | Copilot's apply replaced a whole file to add one line, turning the student's own code purple. |
 | Undo / redo | always `undo-redo` | regains the origin the text had when removed | Undoing an AI change no longer hides the student's own code. |
-| Anchor verification | §9 | Part 1 checks `ck`/`d` consistency; token signatures are added with anchoring | Part 1 scope. |
+| Anchor verification | §9.7 | §6.4 and §9 stage 4, with fixed tolerances (120 s ahead, 15 min late, 95 % coverage) | Makes the result reproducible across implementations. |
+| RFC 3161 `certReq` | true for the first token only | always true | Every token then verifies on its own, offline, at the cost of about 2 KB per token. |
+| Token parsing library | PKI.js | a small DER reader and synchronous signature checks | Keeps the viewer bundle small and the verifier synchronous; interoperability is tested against OpenSSL-made tokens. |
+| Late anchors | not specified | a checkpoint written while offline is anchored when the network returns, possibly in a later session; ANCHORED_LATE is informational | Students work offline; the anchor still bounds everything before the checkpoint. |

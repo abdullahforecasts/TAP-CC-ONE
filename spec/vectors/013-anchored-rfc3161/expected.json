@@ -1,0 +1,70 @@
+{
+  "id": "013",
+  "title": "Every checkpoint timestamped by a TSA",
+  "description": "Two checkpoints, each followed by an RFC 3161 timestamp token from the test TSA (trust its root: test-tsa-root.pem). The tokens prove each checkpoint, and every edit before it, existed by the TSA time.",
+  "verdict": "INTACT",
+  "findings": [],
+  "recordCount": 15,
+  "finalFiles": [
+    {
+      "f": 0,
+      "path": "main.cpp",
+      "length": 77,
+      "sha256": "cffda23eef0a60f547e11784eca517ddf34cb5693eebab941aa41bd3cd096bf6"
+    }
+  ],
+  "composition": {
+    "chars": 77,
+    "nonWs": 59,
+    "byOrigin": {
+      "typed": {
+        "chars": 77,
+        "nonWs": 59
+      }
+    }
+  },
+  "trust": {
+    "tsaRoots": [
+      "test-tsa-root.pem"
+    ],
+    "bitcoinHeaders": {}
+  },
+  "anchoring": {
+    "checkpoints": 2,
+    "anchoredCheckpoints": 2,
+    "coverage": 1,
+    "anchors": [
+      {
+        "seq": 9,
+        "ck": 8,
+        "t": 1791795612850,
+        "type": "rfc3161",
+        "src": "https://tsa.test.invalid/tsr",
+        "status": "valid",
+        "time": 1791795612450,
+        "authority": "TAP Test TSA"
+      },
+      {
+        "seq": 13,
+        "ck": 12,
+        "t": 1791795617750,
+        "type": "rfc3161",
+        "src": "https://tsa.test.invalid/tsr",
+        "status": "valid",
+        "time": 1791795617350,
+        "authority": "TAP Test TSA"
+      }
+    ],
+    "existedBy": [
+      {
+        "seq": 8,
+        "time": 1791795612450
+      },
+      {
+        "seq": 12,
+        "time": 1791795617350
+      }
+    ]
+  },
+  "submittedPaths": []
+}
