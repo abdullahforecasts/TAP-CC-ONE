@@ -22,7 +22,7 @@
     "vectors:check": "tsx --conditions=source tools/gen-vectors/src/main.ts --check",
     "bench": "tsx --conditions=source tools/bench/src/main.ts",
     "fuzz": "tsx --conditions=source tools/fuzz/src/main.ts",
-    "check": "pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build && pnpm build:browser-check && pnpm vectors:check"
+    "check": "pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build && pnpm build:browser-check && pnpm vectors:check && pnpm --filter @tap/anchor roots --check"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

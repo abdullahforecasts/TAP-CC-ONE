@@ -1,9 +1,37 @@
 {
   "name": "@tap/anchor",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.3.0",
   "description": "RFC 3161 and OpenTimestamps clients and token verification.",
   "author": "Abdullah Nawaz",
   "license": "PolyForm-Noncommercial-1.0.0",
-  "type": "module"
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./testing": {
+      "source": "./src/testing.ts",
+      "default": "./src/testing.ts"
+    },
+    "./node": {
+      "source": "./src/node-http.ts",
+      "default": "./src/node-http.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "roots": "tsx scripts/refresh-roots.ts",
+    "real": "tsx --conditions=source scripts/record-real.ts"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@tap/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5"
+  }
 }

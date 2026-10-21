@@ -41,6 +41,9 @@ jobs:
         run: pnpm build:browser-check
       - name: Vectors are deterministic and up to date
         run: pnpm vectors:check
+      - name: Trusted timestamp roots are current and not expiring
+        if: runner.os == 'Linux'
+        run: pnpm --filter @tap/anchor roots --check
       - name: Performance budgets
         run: pnpm bench --assert
       - name: Short fuzz run

@@ -23,6 +23,8 @@ export default defineConfig({
       provider: 'v8',
       include: [
         'packages/core/src/**/*.ts',
+        'packages/anchor/src/**/*.ts',
+        'packages/extension/src/anchoring/**/*.ts',
         'packages/extension/src/recorder/**/*.ts',
         'packages/extension/src/storage/**/*.ts',
         'packages/extension/src/vscode/**/*.ts',
@@ -31,6 +33,7 @@ export default defineConfig({
       exclude: [
         'packages/core/src/index.ts',
         'packages/core/src/globals.d.ts',
+        'packages/anchor/src/index.ts',
         'packages/ui/src/model/index.ts',
         'packages/ui/src/model/types.ts',
         // Needs a real webview; covered by the VS Code integration tests.

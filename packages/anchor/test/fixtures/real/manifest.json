@@ -1,0 +1,40 @@
+{
+  "digest": "6d5ac1c3f4620770b59c9311702ac259def01400946df5723dcf00544f55ff7b",
+  "recorded": "2026-10-21T07:18:47.366Z",
+  "tsas": [
+    {
+      "url": "http://timestamp.digicert.com",
+      "file": "timestamp-digicert-com.tst",
+      "genTime": "2026-10-21T07:18:24.000Z",
+      "path": [
+        "DigiCert SHA256 RSA4096 Timestamp Responder 2026 1",
+        "DigiCert Trusted G4 TimeStamping RSA4096 SHA256 2025 CA1",
+        "DigiCert Trusted Root G4"
+      ]
+    },
+    {
+      "url": "http://timestamp.sectigo.com",
+      "file": "timestamp-sectigo-com.tst",
+      "genTime": "2026-10-21T07:18:41.000Z",
+      "path": [
+        "Sectigo Public Time Stamping Signer R37",
+        "Sectigo Public Time Stamping CA R41",
+        "Sectigo Public Time Stamping Root R46",
+        "USERTrust RSA Certification Authority"
+      ]
+    },
+    {
+      "url": "https://freetsa.org/tsr",
+      "file": "freetsa-org.tst",
+      "genTime": "2026-10-21T07:31:48.000Z",
+      "path": [
+        "www.freetsa.org",
+        "www.freetsa.org"
+      ]
+    }
+  ],
+  "ots": {
+    "calendar": "https://finney.calendar.eternitywall.com",
+    "pending": "ots-pending.ots"
+  }
+}
