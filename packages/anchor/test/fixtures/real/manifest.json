@@ -35,6 +35,9 @@
   ],
   "ots": {
     "calendar": "https://finney.calendar.eternitywall.com",
-    "pending": "ots-pending.ots"
+    "pending": "ots-pending.ots",
+    "upgraded": "ots-upgraded.ots",
+    "height": 972465,
+    "header": "00c018232370028e1276bc37ea162d4bb21ef53b5d6fe68f385d0000000000000000000034a703900936aebe8c48e57e8393c30a3dcdee97472cfb17b6d5997eca42d004a0a0d86a930002174ae67580"
   }
 }
