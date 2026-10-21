@@ -9,15 +9,18 @@ import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { type KeyPair, toHex, toLogPath } from '@tap/core';
 import * as vscode from 'vscode';
+import type { AnchorService, AnchorSink } from '../anchoring/anchorService.js';
 import type { EditReason } from '../recorder/classify.js';
 import { detectAiExtensions, LIVE_SHARE_ID, normaliseAppName } from '../recorder/environment.js';
 import {
+  type CheckpointInfo,
   type DiskRead,
   Recorder,
   type RecorderHost,
   type RecorderOptions,
   type RecorderState,
 } from '../recorder/recorder.js';
+import { maskCommand, programName } from '../recorder/terminal.js';
 import { readTrackedFile } from '../storage/diskReader.js';
 import { createMatcher, type LoadedConfig, loadConfig, TAP_DIR } from '../storage/folderConfig.js';
 import { FolderLock, LOCK_HEARTBEAT_MS } from '../storage/lock.js';
@@ -33,6 +36,8 @@ export interface SessionContext {
   sessionId: string;
   log: vscode.LogOutputChannel;
   onStatusChange: () => void;
+  /** Shared timestamp queue (absent in some tests). */
+  anchors?: AnchorService;
 }
 
 const TICK_MS = 15_000;
@@ -59,6 +64,9 @@ export class FolderSession implements vscode.Disposable {
   private readonly runs = new Map<unknown, number>();
   private lastEnv = '';
   private focused: boolean;
+  private anchorSink: AnchorSink | undefined;
+  /** Newest checkpoint already sent for timestamping. */
+  private lastAnchoredCk = -1;
 
   constructor(folder: vscode.WorkspaceFolder, ctx: SessionContext) {
     this.folder = folder;
@@ -132,6 +140,8 @@ export class FolderSession implements vscode.Disposable {
         bulkMinChars: settings.get<number>('classify.bulkMinChars', 40),
         checkpointIntervalMs: Math.max(60, settings.get<number>('checkpoint.intervalSec', 300)) * 1000,
       };
+      const anchoring = settings.get<boolean>('anchoring.enabled', true);
+      const terminal = settings.get<boolean>('record.terminalCommands', true);
       const env = this.environment();
       this.lastEnv = JSON.stringify([env.aiExt, env.liveShare]);
       const options2: RecorderOptions = {
@@ -147,6 +157,8 @@ export class FolderSession implements vscode.Disposable {
             'tap.classify.clipboardCheckMinChars': recorderSettings.clipboardCheckMinChars,
             'tap.classify.bulkMinChars': recorderSettings.bulkMinChars,
             'tap.checkpoint.intervalSec': recorderSettings.checkpointIntervalMs / 1000,
+            'tap.anchoring.enabled': anchoring,
+            'tap.record.terminalCommands': terminal,
           },
         },
         settings: recorderSettings,
@@ -162,6 +174,7 @@ export class FolderSession implements vscode.Disposable {
       await this.recorder.start();
       this.timers.push(setInterval(() => void this.recorder?.tick(), TICK_MS));
       this.timers.push(setInterval(() => this.heartbeat(), LOCK_HEARTBEAT_MS));
+      this.startAnchoring(settings);
       this.ctx.log.info(`${this.name}: recording to ${this.logPath}`);
     } catch (e) {
       this.fail(e);
@@ -170,6 +183,7 @@ export class FolderSession implements vscode.Disposable {
 
   async pause(): Promise<void> {
     await this.recorder?.pause();
+    await this.anchorLatest();
   }
 
   async resume(): Promise<void> {
@@ -189,6 +203,9 @@ export class FolderSession implements vscode.Disposable {
   async stop(): Promise<void> {
     const recorder = this.recorder;
     if (recorder) {
+      // Timestamp the final state first, so the log ends with independently dated work.
+      const ck = await this.anchorLatest();
+      if (ck) await this.ctx.anchors?.waitFor(this.logIdHex!, ck.s, 8000);
       await recorder.stop('close');
     }
     this.teardown();
@@ -206,6 +223,8 @@ export class FolderSession implements vscode.Disposable {
   }
 
   private teardown(): void {
+    if (this.anchorSink && this.logIdHex) this.ctx.anchors?.unregister(this.logIdHex, this.anchorSink);
+    this.anchorSink = undefined;
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     for (const d of this.disposables) d.dispose();
@@ -243,6 +262,54 @@ export class FolderSession implements vscode.Disposable {
     } catch (e) {
       this.ctx.log.warn(`${this.name}: lock heartbeat failed: ${String(e)}`);
     }
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Timestamp anchoring (design §9.4)
+  // ------------------------------------------------------------------------------------------
+
+  private startAnchoring(settings: vscode.WorkspaceConfiguration): void {
+    const anchors = this.ctx.anchors;
+    const logId = this.logIdHex;
+    if (!anchors || !logId || !this.recorder) return;
+    const recorder = this.recorder;
+    this.anchorSink = { appendAnchor: (body) => recorder.appendAnchor(body) };
+    anchors.register(logId, this.anchorSink);
+    anchors.upgradeNow(logId);
+    this.lastAnchoredCk = this.opened?.info.lastAnchoredCk ?? -1;
+    if (!settings.get<boolean>('anchoring.enabled', true)) return;
+    const every = Math.max(120, settings.get<number>('anchoring.intervalSec', 600)) * 1000;
+    this.timers.push(setInterval(() => void this.anchorLatest(), every));
+  }
+
+  /**
+   * Sends the newest checkpoint for timestamping, writing a new checkpoint first when anything
+   * was recorded since the last one. Nothing is sent when nothing changed (design §9.4).
+   */
+  async anchorLatest(options: { force?: boolean } = {}): Promise<CheckpointInfo | undefined> {
+    const recorder = this.recorder;
+    const anchors = this.ctx.anchors;
+    const logId = this.logIdHex;
+    if (!recorder || !anchors || !logId) return undefined;
+    const settings = vscode.workspace.getConfiguration('tap', this.folder.uri);
+    if (!settings.get<boolean>('anchoring.enabled', true)) return undefined;
+    const ck = await recorder.checkpointNow(options.force === true);
+    if (!ck) return undefined;
+    if (ck.s > this.lastAnchoredCk || options.force) {
+      this.lastAnchoredCk = Math.max(this.lastAnchoredCk, ck.s);
+      anchors.anchor(logId, ck.s, ck.hash);
+    }
+    return ck;
+  }
+
+  /** "TAP: Timestamp Now": checkpoint, timestamp, and wait up to `ms` for the TSAs. */
+  async timestampNow(ms: number): Promise<{ ck?: CheckpointInfo; written: number }> {
+    await this.flush();
+    const ck = await this.anchorLatest({ force: true });
+    if (!ck || !this.ctx.anchors || !this.logIdHex) return { written: 0 };
+    const written = await this.ctx.anchors.waitFor(this.logIdHex, ck.s, ms);
+    await this.flush({ sweep: false });
+    return { ck, written };
   }
 
   /** Editor and environment details disclosed in SESSION_START (design §6.1). */
@@ -307,6 +374,40 @@ export class FolderSession implements vscode.Disposable {
         );
       },
     };
+  }
+
+  /** Commands run in VS Code's terminal (needs shell integration; design §6.1). */
+  private terminalSubscriptions(): vscode.Disposable[] {
+    const w = vscode.window as Partial<typeof vscode.window>;
+    if (!w.onDidStartTerminalShellExecution || !w.onDidEndTerminalShellExecution) return [];
+    const settings = () => vscode.workspace.getConfiguration('tap', this.folder.uri);
+    return [
+      w.onDidStartTerminalShellExecution((e) => {
+        if (!settings().get<boolean>('record.terminalCommands', true)) return;
+        const cwdUri = e.execution.cwd;
+        let cwd: string | undefined;
+        if (cwdUri) {
+          if (cwdUri.scheme !== 'file') return;
+          const rel = path.relative(this.root, cwdUri.fsPath);
+          if (rel.startsWith('..') || path.isAbsolute(rel)) return; // another folder's terminal
+          cwd = rel === '' ? undefined : toLogPath(rel);
+        } else if ((vscode.workspace.workspaceFolders ?? []).length > 1) {
+          return; // cannot tell which folder the command belongs to
+        }
+        const line = e.execution.commandLine.value;
+        if (!line.trim()) return;
+        const details: { cmd: string; cwd?: string } = { cmd: maskCommand(line) };
+        if (cwd !== undefined) details.cwd = cwd;
+        const rid = this.recorder?.runStarted('terminal', programName(line), details);
+        if (rid !== undefined) this.runs.set(e.execution, rid);
+      }),
+      w.onDidEndTerminalShellExecution((e) => {
+        const rid = this.runs.get(e.execution);
+        if (rid === undefined) return;
+        this.runs.delete(e.execution);
+        this.recorder?.runEnded(rid, e.exitCode);
+      }),
+    ];
   }
 
   private vcsRecentlyActive(): boolean {
@@ -412,6 +513,7 @@ export class FolderSession implements vscode.Disposable {
         this.runs.delete(e.execution);
         r()?.runEnded(rid, e.exitCode);
       }),
+      ...this.terminalSubscriptions(),
       vscode.extensions.onDidChange(() => {
         const env = this.environment();
         const key = JSON.stringify([env.aiExt, env.liveShare]);

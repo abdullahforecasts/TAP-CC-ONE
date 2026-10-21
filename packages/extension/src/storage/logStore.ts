@@ -117,7 +117,7 @@ export function openLog(options: OpenLogOptions): OpenedLog {
   const logPath = logPathOf(options.tapDir);
   fs.mkdirSync(options.tapDir, { recursive: true });
   let writer: LogWriter;
-  let info: ResumeInfo = { diskHashes: new Map(), sessionOpen: false };
+  let info: ResumeInfo = { diskHashes: new Map(), sessionOpen: false, lastAnchoredCk: -1 };
   let recovery: RecoveryBody | undefined;
   let quarantinedTo: string | undefined;
   let isNew = false;

@@ -6,8 +6,19 @@
 import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { SubmittedFile } from '@tap/core';
 import * as vscode from 'vscode';
 import { COMPARED_WITH, workspaceFiles } from './workspaceFiles.js';
+
+/** A log opened from a file (a submission), shown read-only with no live refresh. */
+export interface FixedLog {
+  /** Identifies the panel (the file's URI). */
+  key: string;
+  title: string;
+  bytes: Uint8Array;
+  submission: SubmittedFile[];
+  comparedWith: string;
+}
 
 /** How often an open viewer checks the log for new records. */
 const REFRESH_MS = 2000;
@@ -45,7 +56,9 @@ export class ViewerPanel implements vscode.Disposable {
   private static readonly open = new Map<string, ViewerPanel>();
 
   readonly panel: vscode.WebviewPanel;
-  private readonly folder: vscode.WorkspaceFolder;
+  private readonly folder: vscode.WorkspaceFolder | undefined;
+  private readonly fixed: FixedLog | undefined;
+  private readonly title: string;
   private readonly host: ViewerHost;
   private readonly logPath: string;
   private sent = 0;
@@ -64,8 +77,17 @@ export class ViewerPanel implements vscode.Disposable {
       existing.panel.reveal();
       return existing;
     }
-    const viewer = new ViewerPanel(folder, host);
+    const viewer = new ViewerPanel(folder, undefined, host);
     ViewerPanel.open.set(key, viewer);
+    return viewer;
+  }
+
+  /** Opens a log file (e.g. a student's submission) read-only. */
+  static showFixed(log: FixedLog, host: ViewerHost): ViewerPanel {
+    const existing = ViewerPanel.open.get(log.key);
+    if (existing) existing.dispose();
+    const viewer = new ViewerPanel(undefined, log, host);
+    ViewerPanel.open.set(log.key, viewer);
     return viewer;
   }
 
@@ -77,14 +99,20 @@ export class ViewerPanel implements vscode.Disposable {
     for (const v of [...ViewerPanel.open.values()]) v.dispose();
   }
 
-  private constructor(folder: vscode.WorkspaceFolder, host: ViewerHost) {
+  private constructor(
+    folder: vscode.WorkspaceFolder | undefined,
+    fixed: FixedLog | undefined,
+    host: ViewerHost,
+  ) {
     this.folder = folder;
+    this.fixed = fixed;
+    this.title = folder?.name ?? fixed?.title ?? 'log';
     this.host = host;
-    this.logPath = path.join(folder.uri.fsPath, '.tap', 'log.codelog');
+    this.logPath = folder ? path.join(folder.uri.fsPath, '.tap', 'log.codelog') : '';
     const webviewDir = vscode.Uri.joinPath(host.extensionUri, 'dist', 'webview');
     this.panel = vscode.window.createWebviewPanel(
       'tap.viewer',
-      `Log: ${folder.name}`,
+      `Log: ${this.title}`,
       vscode.ViewColumn.Active,
       {
         enableScripts: true,
@@ -113,7 +141,7 @@ export class ViewerPanel implements vscode.Disposable {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="tap-style-nonce" content="${nonce}">
 <link rel="stylesheet" href="${style}">
-<title>Log: ${escapeHtml(this.folder.name)}</title>
+<title>Log: ${escapeHtml(this.title)}</title>
 </head>
 <body>
 <div id="app"></div>
@@ -135,9 +163,8 @@ export class ViewerPanel implements vscode.Disposable {
       if (typeof m.entries === 'number') next.entries = m.entries;
       if (typeof m.message === 'string') next.message = m.message;
       this.status = next;
-      if (next.state === 'error')
-        this.host.log.warn(`${this.folder.name}: viewer: ${next.message ?? 'error'}`);
-    } else if (m.type === 'openFile' && typeof m.path === 'string') {
+      if (next.state === 'error') this.host.log.warn(`${this.title}: viewer: ${next.message ?? 'error'}`);
+    } else if (m.type === 'openFile' && typeof m.path === 'string' && this.folder) {
       const rel = m.path;
       const abs = path.join(this.folder.uri.fsPath, ...rel.split('/'));
       if (!path.relative(this.folder.uri.fsPath, abs).startsWith('..') && fs.existsSync(abs)) {
@@ -148,30 +175,41 @@ export class ViewerPanel implements vscode.Disposable {
 
   /** Sends the whole log (first load, or after the file was replaced). */
   private async sendAll(): Promise<void> {
+    if (this.fixed) {
+      await this.panel.webview.postMessage({
+        type: 'log',
+        bytes: this.fixed.bytes,
+        title: this.fixed.title,
+        submission: this.fixed.submission,
+        comparedWith: this.fixed.comparedWith,
+      });
+      return;
+    }
+    const folder = this.folder!;
     if (this.busy) return;
     this.busy = true;
     try {
-      await this.host.flush(this.folder);
+      await this.host.flush(folder);
       if (!fs.existsSync(this.logPath)) {
         void this.panel.webview.postMessage({
           type: 'error',
-          message: `"${this.folder.name}" has no log yet.`,
+          message: `"${folder.name}" has no log yet.`,
         });
         return;
       }
       const bytes = new Uint8Array(fs.readFileSync(this.logPath));
       this.sent = bytes.length;
       this.sentIdentity = identity(this.logPath);
-      const submission = await workspaceFiles(this.folder.uri.fsPath);
+      const submission = await workspaceFiles(folder.uri.fsPath);
       await this.panel.webview.postMessage({
         type: 'log',
         bytes,
-        title: this.folder.name,
+        title: folder.name,
         submission,
         comparedWith: COMPARED_WITH,
       });
     } catch (e) {
-      this.host.log.warn(`${this.folder.name}: viewer: ${String(e)}`);
+      this.host.log.warn(`${folder.name}: viewer: ${String(e)}`);
       void this.panel.webview.postMessage({ type: 'error', message: `Could not read the log: ${String(e)}` });
     } finally {
       this.busy = false;
@@ -181,6 +219,7 @@ export class ViewerPanel implements vscode.Disposable {
 
   /** Live refresh: while the viewer is visible, send what was appended to the log. */
   private schedule(): void {
+    if (this.fixed) return;
     const wasRunning = this.timer !== undefined;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
@@ -191,10 +230,11 @@ export class ViewerPanel implements vscode.Disposable {
   }
 
   async refresh(): Promise<void> {
-    if (this.busy || !this.panel.visible) return;
+    const folder = this.folder;
+    if (!folder || this.busy || !this.panel.visible) return;
     this.busy = true;
     try {
-      await this.host.flush(this.folder);
+      await this.host.flush(folder);
       if (!fs.existsSync(this.logPath)) return;
       const size = fs.statSync(this.logPath).size;
       if (size === this.sent && identity(this.logPath) === this.sentIdentity) return;
@@ -212,7 +252,7 @@ export class ViewerPanel implements vscode.Disposable {
         fs.closeSync(fd);
       }
       this.sent = size;
-      const submission = await workspaceFiles(this.folder.uri.fsPath);
+      const submission = await workspaceFiles(folder.uri.fsPath);
       await this.panel.webview.postMessage({
         type: 'append',
         bytes: chunk,
@@ -220,7 +260,7 @@ export class ViewerPanel implements vscode.Disposable {
         comparedWith: COMPARED_WITH,
       });
     } catch (e) {
-      this.host.log.warn(`${this.folder.name}: viewer refresh: ${String(e)}`);
+      this.host.log.warn(`${folder.name}: viewer refresh: ${String(e)}`);
     } finally {
       this.busy = false;
     }
@@ -231,7 +271,8 @@ export class ViewerPanel implements vscode.Disposable {
     this.disposed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
-    ViewerPanel.open.delete(this.folder.uri.toString());
+    const key = this.folder?.uri.toString() ?? this.fixed?.key;
+    if (key && ViewerPanel.open.get(key) === this) ViewerPanel.open.delete(key);
     for (const d of this.disposables.splice(0)) d.dispose();
     this.panel.dispose();
   }

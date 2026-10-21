@@ -140,7 +140,14 @@ const emitters = {
     exitCode: number | undefined;
   }>(),
   extensions: new EventEmitter<void>(),
+  terminalStart: new EventEmitter<{ execution: FakeShellExecution }>(),
+  terminalEnd: new EventEmitter<{ execution: FakeShellExecution; exitCode: number | undefined }>(),
 };
+
+export interface FakeShellExecution {
+  commandLine: { value: string };
+  cwd?: Uri;
+}
 
 export interface WorkspaceFolder {
   uri: Uri;
@@ -180,6 +187,17 @@ export const workspace = {
     const w = new FileSystemWatcher(base.uri.fsPath);
     watchers.add(w);
     return w;
+  },
+  async saveAll(): Promise<boolean> {
+    return true;
+  },
+  fs: {
+    async readFile(uri: Uri): Promise<Uint8Array> {
+      return new Uint8Array(fs.readFileSync(uri.fsPath));
+    },
+    async writeFile(uri: Uri, content: Uint8Array): Promise<void> {
+      fs.writeFileSync(uri.fsPath, content);
+    },
   },
   getConfiguration(section: string) {
     return {
@@ -281,7 +299,15 @@ export const ui = {
   answers: [] as Array<string | undefined>,
   statusItems: [] as StatusBarItem[],
   channels: [] as LogChannel[],
+  /** Answers for file dialogs (FIFO). */
+  files: [] as Array<string | undefined>,
+  /** Default paths the save dialog was opened with. */
+  dialogs: [] as string[],
 };
+
+export enum ProgressLocation {
+  Notification = 15,
+}
 
 function answer(kind: Message['kind']) {
   return async (text: string, ...items: unknown[]) => {
@@ -308,6 +334,21 @@ export const window = {
     const c = new LogChannel();
     ui.channels.push(c);
     return c;
+  },
+  onDidStartTerminalShellExecution: emitters.terminalStart.event,
+  onDidEndTerminalShellExecution: emitters.terminalEnd.event,
+  async withProgress<T>(_options: unknown, task: () => Promise<T>): Promise<T> {
+    return task();
+  },
+  /** Answers with ui.files (FIFO): a path, or undefined for "cancelled". */
+  async showSaveDialog(options: { defaultUri?: Uri }): Promise<Uri | undefined> {
+    ui.dialogs.push(options.defaultUri?.fsPath ?? '');
+    const f = ui.files.shift();
+    return f ? Uri.file(f) : undefined;
+  },
+  async showOpenDialog(): Promise<Uri[] | undefined> {
+    const f = ui.files.shift();
+    return f ? [Uri.file(f)] : undefined;
   },
   showInformationMessage: answer('info'),
   showWarningMessage: answer('warning'),
@@ -412,6 +453,8 @@ export const driver = {
     ui.answers.length = 0;
     ui.statusItems.length = 0;
     ui.channels.length = 0;
+    ui.files.length = 0;
+    ui.dialogs.length = 0;
     configuration.clear();
     commandRegistry.clear();
     extensions.all = [];

@@ -11,10 +11,12 @@ export interface ResumeInfo {
   diskHashes: Map<number, Uint8Array>;
   /** Whether the last session was left open (crash or forced quit). */
   sessionOpen: boolean;
+  /** Highest checkpoint that already has an RFC 3161 timestamp (-1 if none). */
+  lastAnchoredCk: number;
 }
 
 export function resumeInfo(records: readonly AnyRecord[]): ResumeInfo {
-  const info: ResumeInfo = { diskHashes: new Map(), sessionOpen: false };
+  const info: ResumeInfo = { diskHashes: new Map(), sessionOpen: false, lastAnchoredCk: -1 };
   for (const rec of records) {
     switch (rec.k) {
       case Kind.SESSION_START:
@@ -23,6 +25,9 @@ export function resumeInfo(records: readonly AnyRecord[]): ResumeInfo {
         break;
       case Kind.SESSION_END:
         info.sessionOpen = false;
+        break;
+      case Kind.ANCHOR:
+        if (rec.b.type === 'rfc3161') info.lastAnchoredCk = Math.max(info.lastAnchoredCk, rec.b.ck);
         break;
       case Kind.KEY_ROTATION:
         info.lastPub = rec.b.newPub;

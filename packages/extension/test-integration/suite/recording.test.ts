@@ -6,9 +6,10 @@
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { type AnyRecord, Flag, Kind, Replayer, readLog, type VerifyReport } from '@tap/core';
+import { type AnyRecord, Flag, Kind, Replayer, readLog, type VerifyReport, verifyLog } from '@tap/core';
 import * as vscode from 'vscode';
 import type { Controller } from '../../src/vscode/controller.js';
+import { HOW_TO, readSubmissionZip } from '../../src/vscode/exportZip.js';
 
 const EXTENSION_ID = 'abdullahforecasts.tap-cc-one';
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -255,6 +256,23 @@ suite('TAP-CC-ONE in VS Code', () => {
     viewer.panel.reveal();
     await until(() => (viewer.status.entries ?? 0) > whileHidden, 15_000);
     viewer.dispose();
+  });
+
+  test('exports a submission zip that opens and matches the code', async () => {
+    await vscode.commands.executeCommand('workbench.action.files.saveAll');
+    const exported = await controller.exportFolder(folder);
+    assert.match(exported.name, /\d{4}-\d{2}-\d{2}-\d{4}\.zip$/);
+    const opened = readSubmissionZip(exported.zip);
+    assert.ok(opened.logName.endsWith('.codelog'));
+    assert.ok(opened.files.some((f) => f.path === 'main.c'));
+    const report = verifyLog(opened.log, { submission: opened.files });
+    assert.deepEqual(
+      report.findings.filter((f) => f.severity === 'fail'),
+      [],
+      JSON.stringify(report.findings, null, 2),
+    );
+    assert.ok(report.findings.some((f) => f.code === 'SUBMISSION_MATCH'));
+    assert.ok(!opened.files.some((f) => f.path === HOW_TO));
   });
 
   test('stops with a log that verifies against the files on disk', async () => {

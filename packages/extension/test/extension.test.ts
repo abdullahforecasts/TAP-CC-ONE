@@ -6,6 +6,8 @@ import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { type HttpClient, parseTimeStampReq, verifyTimestampToken } from '@tap/anchor';
+import { TEST_CALENDAR, testPendingOts, testTsa } from '@tap/anchor/testing';
 import { Kind, readLog, verifyLog } from '@tap/core';
 import * as esbuild from 'esbuild';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -28,6 +30,8 @@ beforeEach(() => {
   fs.writeFileSync(path.join(ws, 'README.png'), 'not code');
   driver.configuration.set('tap.include', ['**/*.{c,h,py,txt}']);
   driver.configuration.set('tap.exclude', ['build/**']);
+  // No real network in unit tests; the anchoring tests below turn it on with a fake TSA.
+  driver.configuration.set('tap.anchoring.enabled', false);
 });
 
 afterEach(() => {
@@ -483,6 +487,100 @@ describe('commands', () => {
     fs.rmSync(path.join(ws, '.tap', 'log.codelog'));
     await vscode.commands.executeCommand('tap.verifyCurrent');
     expect(ui.messages.at(-1)!.text).toMatch(/has no log yet/);
+  });
+});
+
+describe('timestamps, terminal commands, export and opening submissions', () => {
+  const tsa = testTsa();
+  /** A fake TSA and calendar on the "network". */
+  const network: HttpClient = async (url, init) => {
+    if (url.endsWith('/digest')) return { status: 200, body: testPendingOts(init.body!).token };
+    if (init.method === 'GET') return { status: 404, body: new Uint8Array() };
+    const req = parseTimeStampReq(init.body!);
+    return {
+      status: 200,
+      body: tsa.response(tsa.token({ digest: req.digest, genTime: Date.now(), nonce: req.nonce! })),
+    };
+  };
+
+  it('timestamps on demand, records terminal commands and exports a checkable zip', async () => {
+    driver.configuration.set('tap.anchoring.enabled', true);
+    driver.configuration.set('tap.anchoring.tsa', ['http://tsa-a.test', 'http://tsa-b.test']);
+    driver.configuration.set('tap.anchoring.ots', [TEST_CALENDAR]);
+    const folder = driver.addFolder(ws);
+    const { controller } = await start();
+    controller.anchors.setHttp(network);
+    controller.anchors.setTokenCheck((token, digest) => verifyTimestampToken(token, digest, tsa.roots));
+    await vscode.commands.executeCommand('tap.start');
+    const doc = driver.open(path.join(ws, 'main.c'));
+    driver.type(doc, '  return 0;\n', 'int main(void) {\n'.length);
+    driver.save(doc);
+
+    // A compile in the integrated terminal, with a secret on the command line.
+    const exec = {
+      commandLine: { value: 'gcc main.c -o app && MYSQL_PASSWORD=hunter2 ./app' },
+      cwd: fake.Uri.file(ws),
+    };
+    driver.emitters.terminalStart.fire({ execution: exec });
+    driver.emitters.terminalEnd.fire({ execution: exec, exitCode: 0 });
+    // A command in another folder's terminal is not ours.
+    driver.emitters.terminalStart.fire({
+      execution: { commandLine: { value: 'ls' }, cwd: fake.Uri.file('/elsewhere') },
+    });
+
+    await vscode.commands.executeCommand('tap.timestampNow');
+    expect(ui.messages.at(-1)!.text).toMatch(/timestamped by 2 independent service/);
+    expect(status().text).toBe('$(record) TAP');
+
+    const runs = readLog(logBytes())
+      .records.map((r) => r.record)
+      .filter((r) => r.k === Kind.RUN_START);
+    expect(runs.map((r) => (r.k === Kind.RUN_START ? [r.b.kind, r.b.name, r.b.cmd] : []))).toEqual([
+      ['terminal', 'gcc', 'gcc main.c -o app && MYSQL_PASSWORD=*** ./app'],
+    ]);
+
+    // Export: a zip with the log, the code and instructions; the teacher opens it read-only.
+    const exported = await controller.exportFolder(folder as unknown as vscode.WorkspaceFolder);
+    expect(
+      exported.report.anchoring!.anchors.filter((a) => a.type === 'rfc3161').length,
+    ).toBeGreaterThanOrEqual(4);
+    expect(exported.report.findings.filter((f) => f.stage === 'submission').map((f) => f.code)).toEqual([
+      'SUBMISSION_MATCH',
+    ]);
+    const target = path.join(storage, 'submission.zip');
+    ui.files.push(target);
+    await vscode.commands.executeCommand('tap.export');
+    expect(ui.dialogs.at(-1)).toMatch(new RegExp(`${path.basename(ws)}-\\d{4}-\\d{2}-\\d{2}-\\d{4}\\.zip$`));
+    expect(ui.messages.at(-1)!.text).toMatch(/saved submission\.zip/);
+
+    ui.files.push(target);
+    await vscode.commands.executeCommand('tap.openLogFile');
+    const panel = ui.panels.at(-1)!;
+    panel.webview.send({ type: 'ready' });
+    await until(() => panel.webview.posted.length > 0);
+    const msg = panel.webview.posted[0] as {
+      type: string;
+      comparedWith: string;
+      submission: Array<{ path: string }>;
+    };
+    expect(msg.type).toBe('log');
+    expect(msg.comparedWith).toBe('the code in the zip');
+    expect(msg.submission.map((f) => f.path)).toEqual(['main.c']);
+  });
+
+  it('queues timestamps while offline and shows them in the status bar', async () => {
+    driver.configuration.set('tap.anchoring.enabled', true);
+    driver.addFolder(ws);
+    const { controller } = await start();
+    controller.anchors.setHttp(async () => {
+      throw new Error('offline');
+    });
+    await vscode.commands.executeCommand('tap.start');
+    const doc = driver.open(path.join(ws, 'main.c'));
+    driver.type(doc, 'x');
+    await vscode.commands.executeCommand('tap.pause');
+    await until(() => /⧗3/.test(status().text));
+    expect(status().tooltip).toMatch(/3 timestamp\(s\) waiting/);
   });
 });
 

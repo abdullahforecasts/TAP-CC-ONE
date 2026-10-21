@@ -16,6 +16,7 @@
  * the disk.
  */
 import {
+  type AnchorBody,
   type BodyByKind,
   bytesEqual,
   type ChangeTuple,
@@ -145,6 +146,13 @@ export interface RecorderOptions {
 
 export type RecorderState = 'idle' | 'recording' | 'paused' | 'stopped';
 
+/** A written CHECKPOINT: what gets timestamped. */
+export interface CheckpointInfo {
+  s: number;
+  hash: Uint8Array;
+  t: number;
+}
+
 interface Time {
   t: number;
   m: number;
@@ -227,6 +235,7 @@ export class Recorder {
 
   private nextRid = 1;
   private recordsSinceCheckpoint = 0;
+  private lastCk: CheckpointInfo | undefined;
   private lastCheckpointMono = 0;
   private lastTick: { wall: number; mono: number } | undefined;
 
@@ -666,13 +675,19 @@ export class Recorder {
     );
   }
 
-  runStarted(kind: 'debug' | 'task' | 'terminal', name?: string): number {
+  runStarted(
+    kind: 'debug' | 'task' | 'terminal',
+    name?: string,
+    details: { cmd?: string; cwd?: string } = {},
+  ): number {
     const rid = this.nextRid++;
     if (this.stateValue !== 'recording') return rid;
     const upTo = this.seal();
     const time = this.now();
     const body: BodyByKind['RUN_START'] = { rid, kind };
     if (name) body.name = name.slice(0, 500);
+    if (details.cmd) body.cmd = details.cmd.slice(0, 8000);
+    if (details.cwd !== undefined) body.cwd = details.cwd;
     this.enqueue(async () => {
       await this.appendEdits(upTo);
       this.append('RUN_START', body, time);
@@ -720,6 +735,42 @@ export class Recorder {
       await this.appendEdits(upTo);
       this.append('ENV_CHANGE', change, time);
     });
+  }
+
+  /**
+   * The newest checkpoint, after writing a new one when anything was recorded since the last (or
+   * always, with `force`). Undefined when the session is not open.
+   */
+  checkpointNow(force = false): Promise<CheckpointInfo | undefined> {
+    if (this.stateValue !== 'recording' && this.stateValue !== 'paused') return Promise.resolve(undefined);
+    const upTo = this.seal();
+    const time = this.now();
+    let result: CheckpointInfo | undefined;
+    return this.enqueue(async () => {
+      await this.appendEdits(upTo);
+      if (force || !this.lastCk || this.recordsSinceCheckpoint > 0) this.checkpoint(time);
+      result = this.lastCk;
+    }).then(() => result);
+  }
+
+  /** The newest checkpoint written in this session, if any. */
+  get lastCheckpoint(): CheckpointInfo | undefined {
+    return this.lastCk;
+  }
+
+  /**
+   * Appends a third-party timestamp. It is not activity: it does not make the next checkpoint
+   * due. Returns false once the session has ended.
+   */
+  appendAnchor(body: AnchorBody): Promise<boolean> {
+    if (this.stateValue !== 'recording' && this.stateValue !== 'paused') return Promise.resolve(false);
+    let ok = false;
+    return this.enqueue(async () => {
+      if (body.ck >= this.writer.seq) return;
+      this.writer.append('ANCHOR', body, this.now());
+      this.stats.records++;
+      ok = true;
+    }).then(() => ok);
   }
 
   /**
@@ -815,7 +866,8 @@ export class Recorder {
 
   private checkpoint(time: Time): void {
     if (this.closed) throw new RecorderClosed();
-    this.writer.appendCheckpoint(this.key.secretKey, time);
+    const r = this.writer.appendCheckpoint(this.key.secretKey, time);
+    this.lastCk = { s: r.s, hash: r.hash, t: time.t };
     this.stats.records++;
     this.recordsSinceCheckpoint = 0;
     this.lastCheckpointMono = this.host.monoNow();

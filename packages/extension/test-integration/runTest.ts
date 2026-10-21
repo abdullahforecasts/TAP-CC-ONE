@@ -21,6 +21,8 @@ async function main(): Promise<void> {
       {
         'tap.promptOnOpen': false,
         'tap.include': ['**/*.{c,h,txt}'],
+        // No requests to real timestamp services from CI (scripts/record-real.ts covers them).
+        'tap.anchoring.enabled': false,
         'files.trimTrailingWhitespace': true,
         'files.autoSave': 'off',
         'editor.formatOnPaste': false,

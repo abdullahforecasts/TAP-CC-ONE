@@ -161,7 +161,11 @@ export class Sim {
   }
 
   async start(options: SimOptions = {}): Promise<this> {
-    let info: ReturnType<typeof resumeInfo> = { diskHashes: new Map(), sessionOpen: false };
+    let info: ReturnType<typeof resumeInfo> = {
+      diskHashes: new Map(),
+      sessionOpen: false,
+      lastAnchoredCk: -1,
+    };
     if (options.existing) {
       this.prefix = options.existing;
       this.writer = LogWriter.resume(options.existing);

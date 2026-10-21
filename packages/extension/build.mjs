@@ -34,7 +34,11 @@ function newest(dir) {
 function viewer() {
   const ui = join(here, '..', 'ui');
   const bundle = join(ui, 'dist', 'viewer.js');
-  const sources = Math.max(newest(join(ui, 'src')), newest(join(here, '..', 'core', 'src')));
+  const sources = Math.max(
+    newest(join(ui, 'src')),
+    newest(join(here, '..', 'core', 'src')),
+    newest(join(here, '..', 'anchor', 'src')),
+  );
   if (!existsSync(bundle) || statSync(bundle).mtimeMs < sources) {
     const result = spawnSync(process.execPath, [join(ui, 'build.mjs')], { stdio: 'inherit' });
     if (result.status !== 0) throw new Error('building the viewer (@tap/ui) failed');

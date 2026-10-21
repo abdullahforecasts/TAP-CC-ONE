@@ -3,7 +3,7 @@
   "displayName": "TAP-CC-ONE: Code Authorship Log",
   "description": "Records a tamper-evident history of how your code was written, so you can prove your work is your own.",
   "icon": "icon.png",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "abdullahforecasts",
   "author": "Abdullah Nawaz",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -100,6 +100,24 @@
         "title": "Show Recording Menu",
         "category": "TAP",
         "icon": "$(list-unordered)"
+      },
+      {
+        "command": "tap.timestampNow",
+        "title": "Timestamp Now",
+        "category": "TAP",
+        "icon": "$(watch)"
+      },
+      {
+        "command": "tap.export",
+        "title": "Export for Submission",
+        "category": "TAP",
+        "icon": "$(package)"
+      },
+      {
+        "command": "tap.openLogFile",
+        "title": "Open Log File or Submission\u2026",
+        "category": "TAP",
+        "icon": "$(file-zip)"
       }
     ],
     "menus": {
@@ -107,6 +125,13 @@
         {
           "command": "tap.showMenu",
           "when": "false"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "tap.openLogFile",
+          "when": "resourceExtname == .codelog || resourceExtname == .zip",
+          "group": "navigation@90"
         }
       ]
     },
@@ -185,6 +210,46 @@
           "default": 300,
           "minimum": 60,
           "description": "How often a signed checkpoint is written while you are working."
+        },
+        "tap.record.terminalCommands": {
+          "type": "boolean",
+          "default": true,
+          "description": "Record commands run in VS Code's terminal (the full command line, with passwords and tokens masked) and their exit codes. Needs terminal shell integration. Disclosed in the log."
+        },
+        "tap.anchoring.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Have checkpoints timestamped by independent services, so the times in the log can be trusted. Only a 32-byte fingerprint of the log is sent, never your code. Turning this off is disclosed in the log."
+        },
+        "tap.anchoring.intervalSec": {
+          "type": "number",
+          "default": 600,
+          "minimum": 120,
+          "description": "How often the newest checkpoint is timestamped while you work (nothing is sent when nothing changed)."
+        },
+        "tap.anchoring.tsa": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "https://freetsa.org/tsr",
+            "http://timestamp.digicert.com",
+            "http://timestamp.sectigo.com"
+          ],
+          "description": "RFC 3161 time-stamp authorities. Two are used per round, in turn. A token that would not verify with the bundled root certificates is not used, and another authority is asked."
+        },
+        "tap.anchoring.ots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "https://alice.btc.calendar.opentimestamps.org",
+            "https://bob.btc.calendar.opentimestamps.org",
+            "https://finney.calendar.eternitywall.com"
+          ],
+          "description": "OpenTimestamps calendars (proofs anchored in Bitcoin). One is used per round, in turn."
         }
       }
     }
@@ -193,12 +258,14 @@
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "package": "node build.mjs --production && vsce package --no-dependencies --out tap-cc-one-0.2.0.vsix",
+    "package": "node build.mjs --production && vsce package --no-dependencies --out tap-cc-one-0.3.0.vsix",
     "test:integration": "node build.mjs && node build.mjs --tests && node ./out/test/runTest.cjs"
   },
   "dependencies": {
     "@tap/core": "workspace:*",
-    "picomatch": "4.0.7"
+    "picomatch": "4.0.7",
+    "@tap/anchor": "workspace:*",
+    "fflate": "0.8.3"
   },
   "devDependencies": {
     "@tap/ui": "workspace:*",
