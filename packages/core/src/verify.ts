@@ -736,13 +736,28 @@ function verifyAnchors(
     return summary;
   }
 
-  // Time consistency (design §9.7).
+  // Time consistency (design §9.7). Each checkpoint's digest covers every record before it, so a
+  // timestamp of a later checkpoint also bounds all earlier ones: a checkpoint existed by the
+  // earliest time among its own anchors and those of the checkpoints after it. (A checkpoint
+  // timestamped late, e.g. after working offline, is then bounded by a later, prompt timestamp.)
+  const bound = new Map<number, { all?: number; tsa?: number }>();
+  let laterAll: number | undefined;
+  let laterTsa: number | undefined;
+  for (let i = checkpoints.length - 1; i >= 0; i--) {
+    const s = checkpoints[i]!.s;
+    const own = best.get(s);
+    const ownTsa = bestTsa.get(s);
+    if (own !== undefined) laterAll = laterAll === undefined ? own : Math.min(laterAll, own);
+    if (ownTsa !== undefined) laterTsa = laterTsa === undefined ? ownTsa : Math.min(laterTsa, ownTsa);
+    const b: { all?: number; tsa?: number } = {};
+    if (laterAll !== undefined) b.all = laterAll;
+    if (laterTsa !== undefined) b.tsa = laterTsa;
+    bound.set(s, b);
+  }
   let late = 0;
-  let lastTime: number | undefined;
-  let orderWarned = false;
   for (const ck of checkpoints) {
-    const g = best.get(ck.s);
-    if (g === undefined) continue;
+    if (!best.has(ck.s)) continue;
+    const g = bound.get(ck.s)!.all!;
     summary.existedBy.push({ seq: ck.s, time: g });
     if (ck.t > g + ANCHOR_FUTURE_TOLERANCE_MS) {
       add({
@@ -753,20 +768,9 @@ function verifyAnchors(
         seq: ck.s,
       });
     } else {
-      const tsa = bestTsa.get(ck.s);
-      if (tsa !== undefined && tsa - ck.t > ANCHOR_LATE_MS) late++;
+      const tsa = bound.get(ck.s)!.tsa;
+      if (bestTsa.has(ck.s) && tsa !== undefined && tsa - ck.t > ANCHOR_LATE_MS) late++;
     }
-    if (lastTime !== undefined && g + CLOCK_TOLERANCE_MS < lastTime && !orderWarned) {
-      orderWarned = true;
-      add({
-        stage: 'anchors',
-        severity: 'warn',
-        code: 'ANCHOR_TIME_ORDER',
-        message: `checkpoint ${ck.s} was timestamped before an earlier checkpoint`,
-        seq: ck.s,
-      });
-    }
-    lastTime = Math.max(lastTime ?? g, g);
   }
   summary.anchoredCheckpoints = summary.existedBy.length;
 

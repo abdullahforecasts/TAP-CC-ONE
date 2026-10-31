@@ -64,7 +64,7 @@ Individual commands:
 | `pnpm bench` | Simulates a 4-hour assignment and reports speed and log size |
 | `pnpm fuzz --seconds 60` | Fuzzes the verifier with mutated logs |
 | `pnpm --filter @tap/ui run e2e` | Viewer end-to-end tests in Chromium (needs `pnpm --filter @tap/ui exec playwright install chromium` once) |
-| `pnpm --filter tap-cc-one run package` | Builds `packages/extension/tap-cc-one-0.3.1.vsix` |
+| `pnpm --filter tap-cc-one run package` | Builds `packages/extension/tap-cc-one-0.3.2.vsix` |
 | `pnpm --filter @tap/anchor roots --check` | Fails if a trusted timestamp root expired or `roots.generated.ts` is stale |
 | `pnpm --filter @tap/anchor real` | Records real answers from the timestamp services (needs internet; see `docs/anchoring-providers.md`) |
 | `pnpm --filter tap-cc-one test:integration` | Runs the extension tests inside a real VS Code (downloads VS Code; on Linux use `xvfb-run -a`) |
@@ -72,7 +72,7 @@ Individual commands:
 ## Trying the extension
 
 - **From source:** open the repo in VS Code and press **F5** (uses `.vscode/launch.json`). A second VS Code window opens with the extension loaded; open any folder with code there and choose **Start**.
-- **From the VSIX:** run `pnpm --filter tap-cc-one run package`, then in VS Code: Extensions view → `⋯` → **Install from VSIX…** → pick `packages/extension/tap-cc-one-0.3.1.vsix`.
+- **From the VSIX:** run `pnpm --filter tap-cc-one run package`, then in VS Code: Extensions view → `⋯` → **Install from VSIX…** → pick `packages/extension/tap-cc-one-0.3.2.vsix`.
 - **The viewer on its own:** `pnpm --filter @tap/ui build`, then serve `packages/ui/dist` with any static server and open a `.codelog` file in the page.
 
 Set `TAP_PROPERTY_RUNS=2000` to run the property tests harder than the default 150 cases.
@@ -107,7 +107,7 @@ The writer does no I/O, replays everything it appends (so `log.state` is exactly
 Needs VS Code 1.93 or newer. Run the command for your system in a terminal; it downloads the extension, installs it into VS Code (replacing any older version) and shows the installed version. If it worked, the last line printed is:
 
 ```
-abdullahforecasts.tap-cc-one@0.3.1
+abdullahforecasts.tap-cc-one@0.3.2
 ```
 
 If that line is missing, the download or the install failed: the lines above it say why.
@@ -115,26 +115,26 @@ If that line is missing, the download or the install failed: the lines above it 
 **Windows** (PowerShell):
 
 ```powershell
-$ProgressPreference = 'SilentlyContinue'; iwr https://github.com/abdullahforecasts/TAP-CC-ONE/releases/download/v0.3.1/tap-cc-one-0.3.1.vsix -OutFile $env:TEMP\tap.vsix; code --install-extension $env:TEMP\tap.vsix --force; code --list-extensions --show-versions | findstr tap
+$ProgressPreference = 'SilentlyContinue'; iwr https://github.com/abdullahforecasts/TAP-CC-ONE/releases/download/v0.3.2/tap-cc-one-0.3.2.vsix -OutFile $env:TEMP\tap.vsix; code --install-extension $env:TEMP\tap.vsix --force; code --list-extensions --show-versions | findstr tap
 ```
 
 **Linux** (Ubuntu and others):
 
 ```bash
-curl -fL -o /tmp/tap.vsix https://github.com/abdullahforecasts/TAP-CC-ONE/releases/download/v0.3.1/tap-cc-one-0.3.1.vsix && code --install-extension /tmp/tap.vsix --force && code --list-extensions --show-versions | grep tap
+curl -fL -o /tmp/tap.vsix https://github.com/abdullahforecasts/TAP-CC-ONE/releases/download/v0.3.2/tap-cc-one-0.3.2.vsix && code --install-extension /tmp/tap.vsix --force && code --list-extensions --show-versions | grep tap
 ```
 
 **macOS** (works even if the `code` command is not set up):
 
 ```bash
-curl -fL -o /tmp/tap.vsix https://github.com/abdullahforecasts/TAP-CC-ONE/releases/download/v0.3.1/tap-cc-one-0.3.1.vsix && CODE="$(command -v code || echo "$(mdfind 'kMDItemCFBundleIdentifier == com.microsoft.VSCode' | head -1)/Contents/Resources/app/bin/code")" && "$CODE" --install-extension /tmp/tap.vsix --force && "$CODE" --list-extensions --show-versions | grep tap
+curl -fL -o /tmp/tap.vsix https://github.com/abdullahforecasts/TAP-CC-ONE/releases/download/v0.3.2/tap-cc-one-0.3.2.vsix && CODE="$(command -v code || echo "$(mdfind 'kMDItemCFBundleIdentifier == com.microsoft.VSCode' | head -1)/Contents/Resources/app/bin/code")" && "$CODE" --install-extension /tmp/tap.vsix --force && "$CODE" --list-extensions --show-versions | grep tap
 ```
 
 **Check that it works:** open VS Code (restart it if it was already open), press `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS) and type `TAP`. If you see the TAP commands, like in the screenshot below, you are good to go.
 
 ![The TAP commands in the VS Code Command Palette](docs/images/tap-commands.png)
 
-To update later, run the same command with the new version number (both `v0.3.1` and `0.3.1` in the link). All releases: [github.com/abdullahforecasts/TAP-CC-ONE/releases](https://github.com/abdullahforecasts/TAP-CC-ONE/releases).
+To update later, run the same command with the new version number (both `v0.3.2` and `0.3.2` in the link). All releases: [github.com/abdullahforecasts/TAP-CC-ONE/releases](https://github.com/abdullahforecasts/TAP-CC-ONE/releases).
 
 ## License
 

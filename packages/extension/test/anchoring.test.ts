@@ -252,6 +252,43 @@ describe('anchor service', () => {
 });
 
 describe('recorder and anchoring', () => {
+  it('keeps monotonic time in order when a timestamp waits behind a slow job', async () => {
+    const sim = new Sim();
+    sim.host.disk.set('a.c', '');
+    await sim.start();
+    sim.open('a.c');
+    sim.type('a.c', 0, 'int x;');
+    const ck = (await sim.recorder.checkpointNow())!;
+    // A disk sweep that takes a while holds the write queue.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const read = sim.host.readDisk.bind(sim.host);
+    sim.host.readDisk = async (rel) => {
+      await gate;
+      return read(rel);
+    };
+    const flushed = sim.recorder.flush();
+    const anchored = sim.recorder.appendAnchor({
+      ck: ck.s,
+      d: ck.hash,
+      type: 'rfc3161',
+      src: 'http://tsa.test',
+      tok: tsa.token({ digest: ck.hash, genTime: ck.t + 500 }),
+      status: 'complete',
+    });
+    sim.host.advance(1000);
+    const paused = sim.recorder.pause();
+    sim.host.advance(5000);
+    release();
+    await Promise.all([flushed, anchored, paused]);
+    sim.host.readDisk = read;
+    await sim.recorder.stop();
+    const report = verifyLog(sim.bytes);
+    expect(report.findings.map((f) => f.code)).not.toContain('MONO_BACKWARDS');
+  });
+
   it('anchors the newest checkpoint, writing one only when something changed', async () => {
     const sim = new Sim();
     sim.host.disk.set('a.c', '');

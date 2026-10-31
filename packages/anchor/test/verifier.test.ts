@@ -119,6 +119,18 @@ describe('anchor verification in verifyLog', () => {
     expect(r.anchoring!.anchoredCheckpoints).toBe(0);
   });
 
+  it('a checkpoint timestamped late (offline) is bounded by a later, prompt timestamp', () => {
+    let second = 0;
+    const { bytes } = build((ck, i) => {
+      const genTime = i === 0 ? ck.t + 3_600_000 : ck.t + 500;
+      if (i === 1) second = genTime;
+      return [['rfc3161', tsa.token({ digest: ck.hash, genTime })]];
+    });
+    const r = verifyLog(bytes, { anchorVerifier: verifier() });
+    expect(codes(r)).toEqual(['pass:ANCHORS_OK']);
+    expect(r.anchoring!.existedBy.map((e) => e.time)).toEqual([second, second]);
+  });
+
   it('a clock set ahead of the timestamp is caught', () => {
     const { bytes } = build((ck) => [['rfc3161', tsa.token({ digest: ck.hash, genTime: ck.t })]], {
       clockAhead: 600_000,

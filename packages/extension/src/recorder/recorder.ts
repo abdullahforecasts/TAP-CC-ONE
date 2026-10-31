@@ -213,6 +213,8 @@ export class Recorder {
   private closed = false;
   private queue: Promise<void> = Promise.resolve();
   private sessionStartMono = 0;
+  /** Largest `m` written in this session: records are written in queue order, never with a smaller `m`. */
+  private lastM = 0;
   private sid: Uint8Array = new Uint8Array(16);
 
   /** Path → file id for live files, maintained synchronously (the writer catches up in jobs). */
@@ -284,6 +286,7 @@ export class Recorder {
   start(): Promise<void> {
     if (this.stateValue !== 'idle') throw new Error(`cannot start from state ${this.stateValue}`);
     this.sessionStartMono = this.host.monoNow();
+    this.lastM = 0;
     this.lastCheckpointMono = this.sessionStartMono;
     this.lastSweepMono = this.sessionStartMono;
     this.sid = this.host.randomBytes(16);
@@ -765,9 +768,10 @@ export class Recorder {
   appendAnchor(body: AnchorBody): Promise<boolean> {
     if (this.stateValue !== 'recording' && this.stateValue !== 'paused') return Promise.resolve(false);
     let ok = false;
+    const time = this.now();
     return this.enqueue(async () => {
       if (body.ck >= this.writer.seq) return;
-      this.writer.append('ANCHOR', body, this.now());
+      this.writer.append('ANCHOR', body, this.ordered(time));
       this.stats.records++;
       ok = true;
     }).then(() => ok);
@@ -857,16 +861,27 @@ export class Recorder {
     this.host.onError(e, context);
   }
 
+  /**
+   * Times are taken when an event happens, but records are written in queue order. An event that
+   * waited behind a slower job (a disk sweep, a timestamp) keeps its wall time and is given the
+   * previous record's monotonic time if its own is smaller, so `m` never decreases in a session.
+   */
+  private ordered(time: Time): Time {
+    const m = Math.max(time.m, this.lastM);
+    this.lastM = m;
+    return m === time.m ? time : { t: time.t, m };
+  }
+
   private append<K extends KindName>(kind: K, body: BodyByKind[K], time: Time): void {
     if (this.closed) throw new RecorderClosed();
-    this.writer.append(kind, body, time);
+    this.writer.append(kind, body, this.ordered(time));
     this.stats.records++;
     this.recordsSinceCheckpoint++;
   }
 
   private checkpoint(time: Time): void {
     if (this.closed) throw new RecorderClosed();
-    const r = this.writer.appendCheckpoint(this.key.secretKey, time);
+    const r = this.writer.appendCheckpoint(this.key.secretKey, this.ordered(time));
     this.lastCk = { s: r.s, hash: r.hash, t: time.t };
     this.stats.records++;
     this.recordsSinceCheckpoint = 0;

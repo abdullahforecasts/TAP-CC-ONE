@@ -67,7 +67,7 @@ export function howToVerify(input: ExportInput, logName: string): string {
     'How to check it',
     '1. Install the TAP-CC-ONE extension in VS Code:',
     '   https://github.com/abdullahforecasts/TAP-CC-ONE',
-    '2. In VS Code, run "TAP: Open Log File..." and choose this zip (no need to unzip it).',
+    '2. In VS Code, run "TAP: Open Log File or Submission..." and choose this zip (no need to unzip it).',
     '   The viewer checks the log, compares it with the code in the zip, and shows Save History,',
     '   a replay of every file, a timeline and how the final code arrived.',
     "3. To be sure the log was made on the student's own computer, ask them to run",

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+- Records no longer get a smaller monotonic time than the record before them when a timestamp is written while a slower job (such as a disk check) is running. This removes the MONO_BACKWARDS warning ("monotonic time decreased within a session").
+- A checkpoint timestamped late (after working offline) now counts as timestamped by the earliest timestamp of any later checkpoint, since that checkpoint's seal covers it. This removes the ANCHOR_TIME_ORDER warning and most ANCHORED_LATE notes after offline work.
+- HOW-TO-VERIFY.txt names the command as it appears in VS Code ("TAP: Open Log File or Submission...").
+
 ## 0.3.1
 
 - Timestamps that waited while offline go out within about two minutes of the network coming back: retries are at most two minutes apart (was up to 30 minutes), and all waiting requests are retried as soon as one gets through or a window is opened or reloaded.
