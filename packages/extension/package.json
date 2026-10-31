@@ -258,7 +258,7 @@
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "package": "node build.mjs --production && vsce package --no-dependencies --out tap-cc-one-0.3.0.vsix",
+    "package": "node build.mjs --production && vsce package --no-dependencies",
     "test:integration": "node build.mjs && node build.mjs --tests && node ./out/test/runTest.cjs"
   },
   "dependencies": {
