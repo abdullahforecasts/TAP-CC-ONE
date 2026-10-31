@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Timestamps that waited while offline go out within about two minutes of the network coming back: retries are at most two minutes apart (was up to 30 minutes), and all waiting requests are retried as soon as one gets through or a window is opened or reloaded.
+
 ## 0.3.0 (Part 4: independent timestamps and export, development build)
 
 - Checkpoints are timestamped by independent services: two RFC 3161 time-stamp authorities per round (FreeTSA, DigiCert, Sectigo, in turn) and one OpenTimestamps calendar (Bitcoin). Only a 32-byte hash of the log is sent.

@@ -86,7 +86,11 @@ export interface AnchorServiceDeps {
 }
 
 const BASE_DELAY = 30_000;
-const MAX_DELAY = 30 * 60_000;
+/**
+ * Longest wait between retries of a failed request. Short, so timestamps go out soon after the
+ * network returns (a failed request while offline costs nothing).
+ */
+const MAX_DELAY = 2 * 60_000;
 const GIVE_UP_AFTER = 14 * 24 * 3_600_000;
 const FIRST_UPGRADE_AFTER = 2 * 3_600_000;
 const UPGRADE_EVERY = 6 * 3_600_000;
@@ -154,7 +158,16 @@ export class AnchorService {
 
   register(logId: string, sink: AnchorSink): void {
     this.sinks.set(logId, sink);
+    // A window opened or reloaded: try waiting requests now instead of after their backoff.
+    this.retryWaiting();
     void this.process();
+  }
+
+  /** Makes every request that failed earlier due now (not OpenTimestamps upgrades, which wait for Bitcoin). */
+  private retryWaiting(): void {
+    const now = this.deps.now();
+    for (const j of this.q.jobs)
+      if (j.type !== 'ots-upgrade' && !j.ready && j.attempts > 0) j.nextAt = Math.min(j.nextAt, now);
   }
 
   unregister(logId: string, sink: AnchorSink): void {
@@ -315,6 +328,11 @@ export class AnchorService {
           this.persist();
           return;
         }
+      }
+      // A request got through, so the network is back: retry the others now.
+      if (job.attempts > 0 || this.q.jobs.some((j) => j !== job && j.attempts > 0 && !j.ready)) {
+        this.retryWaiting();
+        this.again = true;
       }
       delete job.lastError;
       this.persist();

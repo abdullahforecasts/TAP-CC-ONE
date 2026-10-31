@@ -139,6 +139,33 @@ describe('anchor service', () => {
     expect(out.written.filter((w) => w.type === 'ots').map((w) => w.src)).toEqual([TEST_CALENDAR]);
   });
 
+  it('sends waiting timestamps right away when a window opens or one request gets through', async () => {
+    const h = harness({ online: false });
+    const s = new AnchorService(h.deps);
+    const out = sink();
+    s.register('log1', out);
+    s.anchor('log1', 3, d);
+    await s.process();
+    expect(s.outstanding('log1')).toBe(3);
+    // Back online; the failed requests are in backoff, but reloading the window retries them now.
+    h.state.online = true;
+    s.unregister('log1', out);
+    s.register('log1', out);
+    await s.process();
+    expect(s.outstanding('log1')).toBe(0);
+    // While offline for long, retries stay at most two minutes apart.
+    const h2 = harness({ online: false });
+    const s2 = new AnchorService(h2.deps);
+    s2.register('log1', sink());
+    s2.anchor('log1', 3, d);
+    for (let i = 0; i < 20; i++) {
+      await s2.process();
+      h2.state.now += 60_000;
+    }
+    const jobs = JSON.parse(h2.state.file!).jobs as Array<{ nextAt: number }>;
+    for (const j of jobs) expect(j.nextAt - h2.state.now).toBeLessThanOrEqual(2.4 * 60_000);
+  });
+
   it('queues while offline, survives a restart, and delivers when back online', async () => {
     const h = harness({ online: false });
     const s1 = new AnchorService(h.deps);
