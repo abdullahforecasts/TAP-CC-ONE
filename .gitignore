@@ -10,7 +10,7 @@ fuzz-crashes/
 Shots/
 out/
 *.vsix
-packages/extension/LICENSE
+packages/extension/LICENSE.md
 test-results/
 playwright-report/
 

@@ -2,7 +2,7 @@
 
 A VS Code extension that records a tamper-evident, independently timestamped history of how code was written. Students attach this history to their submissions so they can counter false plagiarism or AI-use allegations.
 
-**Author:** Abdullah Nawaz · **License:** [PolyForm Noncommercial 1.0.0](LICENSE) (free for education, research and personal use; [commercial use](#license) by agreement)
+**Author:** Abdullah Nawaz · **License:** [PolyForm Noncommercial 1.0.0](LICENSE.md) (free for education, research and personal use; [commercial use](#license) by agreement)
 
 ## Status
 
@@ -138,7 +138,7 @@ To update later, run the same command with the new version number (both `v0.3.1`
 
 ## License
 
-The code is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+The code is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
 
 - **Free** for noncommercial use: students, teachers, schools and universities, research, and personal projects.
 - **Commercial use** (for example a company, a paid course or proctoring platform, or a product that includes this code) needs a separate commercial licence. Contact Abdullah Nawaz at abdullahforecasts@gmail.com.

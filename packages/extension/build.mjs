@@ -81,7 +81,7 @@ if (tests) {
     rmSync(join(here, 'dist'), { recursive: true, force: true });
     mkdirSync(join(here, 'dist'), { recursive: true });
     // vsce expects the license next to the manifest.
-    copyFileSync(join(here, '..', '..', 'LICENSE'), join(here, 'LICENSE'));
+    copyFileSync(join(here, '..', '..', 'LICENSE.md'), join(here, 'LICENSE.md'));
   }
   viewer();
   if (watch) {
