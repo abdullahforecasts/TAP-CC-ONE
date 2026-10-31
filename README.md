@@ -102,6 +102,40 @@ const report = verifyLog(bytes);    // { verdict, findings, finalFiles, composit
 
 The writer does no I/O, replays everything it appends (so `log.state` is exactly what a verifier will reconstruct), and refuses records that would not replay.
 
+## Installing on Windows, Linux and macOS
+
+Needs VS Code 1.93 or newer. Run the command for your system in a terminal; it downloads the extension, installs it into VS Code (replacing any older version) and shows the installed version. If it worked, the last line printed is:
+
+```
+abdullahforecasts.tap-cc-one@0.3.1
+```
+
+If that line is missing, the download or the install failed: the lines above it say why.
+
+**Windows** (PowerShell):
+
+```powershell
+$ProgressPreference = 'SilentlyContinue'; iwr https://github.com/abdullahforecasts/TAP-CC-ONE/releases/download/v0.3.1/tap-cc-one-0.3.1.vsix -OutFile $env:TEMP\tap.vsix; code --install-extension $env:TEMP\tap.vsix --force; code --list-extensions --show-versions | findstr tap
+```
+
+**Linux** (Ubuntu and others):
+
+```bash
+curl -fL -o /tmp/tap.vsix https://github.com/abdullahforecasts/TAP-CC-ONE/releases/download/v0.3.1/tap-cc-one-0.3.1.vsix && code --install-extension /tmp/tap.vsix --force && code --list-extensions --show-versions | grep tap
+```
+
+**macOS** (works even if the `code` command is not set up):
+
+```bash
+curl -fL -o /tmp/tap.vsix https://github.com/abdullahforecasts/TAP-CC-ONE/releases/download/v0.3.1/tap-cc-one-0.3.1.vsix && CODE="$(command -v code || echo "$(mdfind 'kMDItemCFBundleIdentifier == com.microsoft.VSCode' | head -1)/Contents/Resources/app/bin/code")" && "$CODE" --install-extension /tmp/tap.vsix --force && "$CODE" --list-extensions --show-versions | grep tap
+```
+
+**Check that it works:** open VS Code (restart it if it was already open), press `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS) and type `TAP`. If you see the TAP commands, like in the screenshot below, you are good to go.
+
+![The TAP commands in the VS Code Command Palette](docs/images/tap-commands.png)
+
+To update later, run the same command with the new version number (both `v0.3.1` and `0.3.1` in the link). All releases: [github.com/abdullahforecasts/TAP-CC-ONE/releases](https://github.com/abdullahforecasts/TAP-CC-ONE/releases).
+
 ## License
 
 The code is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
