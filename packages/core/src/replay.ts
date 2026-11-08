@@ -222,7 +222,7 @@ export class Replayer {
           let source: string | undefined;
           if (tracking) {
             if (ins.length > 0 && (flags & Flag.PASTE) !== 0) source = this.copySource(ins);
-            origin = originFromFlags(flags, source !== undefined);
+            origin = originFromFlags(flags, source !== undefined, ins);
           }
           // A change that replaces text (an editor, tool or AI rewriting a whole region) only
           // re-attributes what really differs; unchanged code keeps its origin (spec §7.1).
@@ -376,23 +376,32 @@ export class Replayer {
     this.removed.set(file.f, list);
   }
 
-  /** The origins `text` had when it was last removed from the file, newest removal first. */
+  /**
+   * The origins `text` had when it was last removed from the file, newest removal first. An undo
+   * may bring back only part of a removed piece (or the editor may split it differently), so a
+   * removed piece that contains `text` also counts.
+   */
   private restoredSpans(
     file: FileState,
     text: string,
   ): Array<{ text: string; origin: Origin; seq: number }> | undefined {
     const list = this.removed.get(file.f);
     if (!list) return undefined;
-    for (let i = list.length - 1; i >= 0; i--) {
-      const entry = list[i]!;
-      if (entry.text !== text) continue;
-      const out: Array<{ text: string; origin: Origin; seq: number }> = [];
-      let pos = 0;
-      for (const span of entry.spans) {
-        out.push({ text: text.slice(pos, pos + span.len), origin: span.origin, seq: span.seq });
-        pos += span.len;
+    for (const exact of text.length >= 8 ? [true, false] : [true]) {
+      for (let i = list.length - 1; i >= 0; i--) {
+        const entry = list[i]!;
+        const at = exact ? (entry.text === text ? 0 : -1) : entry.text.indexOf(text);
+        if (at < 0) continue;
+        const out: Array<{ text: string; origin: Origin; seq: number }> = [];
+        let pos = 0;
+        for (const span of entry.spans) {
+          const from = Math.max(pos, at);
+          const to = Math.min(pos + span.len, at + text.length);
+          if (to > from) out.push({ text: entry.text.slice(from, to), origin: span.origin, seq: span.seq });
+          pos += span.len;
+        }
+        return out;
       }
-      return out;
     }
     return undefined;
   }
@@ -484,6 +493,9 @@ export class Replayer {
     const origin = SNAPSHOT_PROVENANCE[b.origin];
     for (const e of minimalEdits(existing.text, b.text)) {
       if (existing.spans) {
+        // Keep what the snapshot replaced, so an undo in the editor brings it back with its
+        // real origin rather than as "undo/redo" (spec §7.1).
+        if (e.del > 0) this.rememberRemoved(existing, e.off, e.del);
         existing.spans.remove(e.off, e.del);
         existing.spans.insert(e.off, e.ins.length, origin, seq);
       }

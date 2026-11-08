@@ -1,3 +1,15 @@
+import {
+  type ActivitySummary,
+  aiOnWhileDeclaredOff,
+  codeLinesOf,
+  compareVersions,
+  REUSE_MIN_LINES,
+  REUSE_MIN_SHARE,
+  REUSE_WINDOW_MS,
+  summarizeActivity,
+  type TerminalReuse,
+  weakenedSetting,
+} from './activity.js';
 import { bytesEqual, toHex } from './bytes.js';
 import { Flag, Kind } from './constants.js';
 import { checkpointMessage, keyFingerprint, verifySignature } from './crypto.js';
@@ -10,7 +22,7 @@ import type { AnchorBody, AnyRecord } from './records.js';
 import { Replayer, type Severity } from './replay.js';
 import { contentHash } from './text.js';
 
-export type Stage = 'parse' | 'chain' | 'signatures' | 'anchors' | 'replay' | 'submission';
+export type Stage = 'parse' | 'chain' | 'signatures' | 'anchors' | 'replay' | 'submission' | 'activity';
 
 export interface Finding {
   stage: Stage;
@@ -126,6 +138,8 @@ export interface VerifyReport {
   /** Final-code composition: all live files, or only the matched submitted files. */
   composition?: Composition;
   anchoring?: AnchoringSummary;
+  /** How the code was written around the edits (stage 7, 0.3.3). */
+  activity?: ActivitySummary;
 }
 
 const MAX_CLOCK_FINDINGS = 10;
@@ -134,6 +148,8 @@ const CLOCK_TOLERANCE_MS = 2000;
 export const ANCHOR_FUTURE_TOLERANCE_MS = 120_000;
 /** Anchored more than this after the checkpoint: "anchored late (offline?)". */
 export const ANCHOR_LATE_MS = 15 * 60_000;
+/** Clock behind real time by more than this is reported (0.3.3). */
+export const CLOCK_BEHIND_MS = 10 * 60_000;
 
 function verdictOf(findings: readonly Finding[]): Verdict {
   if (findings.some((f) => f.severity === 'fail')) return 'NOT_INTACT';
@@ -351,6 +367,56 @@ export function verifyLog(bytes: Uint8Array, options: VerifyOptions = {}): Verif
   let prevM: number | null = null;
   let clockFindings = 0;
   const stats = report.stats;
+  // Terminal output waiting to be compared with the code (D2), and the last terminal command (D9).
+  const runCmds = new Map<number, { cmd: string; t: number }>();
+  let lastTerminal: { cmd: string; t: number } | undefined;
+  const pendingOutput: Array<{
+    seq: number;
+    t: number;
+    cmd: string;
+    lines: Map<string, string>;
+    before: Set<string>;
+    best?: TerminalReuse;
+  }> = [];
+  const reuse: TerminalReuse[] = [];
+  const liveCodeLines = (): Map<string, string> => {
+    const out = new Map<string, string>();
+    for (const file of replayer.liveFiles()) {
+      for (const n of codeLinesOf(file.text).keys()) if (!out.has(n)) out.set(n, file.path);
+    }
+    return out;
+  };
+  const settleOutput = (p: (typeof pendingOutput)[number]) => {
+    if (p.best) reuse.push(p.best);
+  };
+  const compareOutput = (t: number) => {
+    if (pendingOutput.length === 0) return;
+    const now = liveCodeLines();
+    for (let i = pendingOutput.length - 1; i >= 0; i--) {
+      const p = pendingOutput[i]!;
+      const matched = [...p.lines.keys()].filter((n) => now.has(n) && !p.before.has(n));
+      if (
+        matched.length >= REUSE_MIN_LINES &&
+        matched.length / p.lines.size >= REUSE_MIN_SHARE &&
+        (!p.best || matched.length > p.best.lines)
+      ) {
+        p.best = {
+          seq: p.seq,
+          t: p.t,
+          cmd: p.cmd,
+          lines: matched.length,
+          outputLines: p.lines.size,
+          files: [...new Set(matched.map((n) => now.get(n)!))].sort(),
+          sample: matched.slice(0, 5).map((n) => p.lines.get(n)!),
+          foundAt: t,
+        };
+      }
+      if (t - p.t > REUSE_WINDOW_MS) {
+        settleOutput(p);
+        pendingOutput.splice(i, 1);
+      }
+    }
+  };
   for (const rec of records) {
     stats.firstTime ??= rec.t;
     stats.lastTime = rec.t;
@@ -442,7 +508,28 @@ export function verifyLog(bytes: Uint8Array, options: VerifyOptions = {}): Verif
         break;
       case Kind.RUN_START:
         stats.runs++;
+        if (rec.b.kind === 'terminal' && rec.b.cmd) {
+          runCmds.set(rec.b.rid, { cmd: rec.b.cmd, t: rec.t });
+          lastTerminal = { cmd: rec.b.cmd, t: rec.t };
+        }
         break;
+      case Kind.RUN_END: {
+        const run = runCmds.get(rec.b.rid);
+        if (run && rec.b.out !== undefined && !replayFailed) {
+          const lines = codeLinesOf(rec.b.out);
+          if (lines.size >= REUSE_MIN_LINES) {
+            pendingOutput.push({
+              seq: rec.s,
+              t: rec.t,
+              cmd: run.cmd,
+              lines,
+              before: new Set(liveCodeLines().keys()),
+            });
+          }
+        }
+        runCmds.delete(rec.b.rid);
+        break;
+      }
       case Kind.PAUSE:
         stats.pauses++;
         add({ stage: 'replay', severity: 'info', code: 'PAUSED', message: 'recording paused', seq: rec.s });
@@ -492,15 +579,29 @@ export function verifyLog(bytes: Uint8Array, options: VerifyOptions = {}): Verif
     }
     if (replayFailed) continue;
     for (const issue of replayer.apply(rec)) {
+      let message = issue.message;
+      if (
+        (issue.code === 'EXTERNAL_CHANGE' || issue.code === 'EXTERNAL_FILE') &&
+        lastTerminal &&
+        rec.t - lastTerminal.t >= 0 &&
+        rec.t - lastTerminal.t <= 120_000
+      ) {
+        message += ` (${Math.round((rec.t - lastTerminal.t) / 1000)} s after the terminal command "${shorten(lastTerminal.cmd, 120)}")`;
+      }
       add({
         stage: 'replay',
         severity: issue.severity,
         code: issue.code,
-        message: issue.message,
+        message,
         seq: issue.seq,
       });
       if (issue.severity === 'fail') replayFailed = true;
     }
+    if (!replayFailed && (rec.k === Kind.CHECKPOINT || rec.k === Kind.SAVE)) compareOutput(rec.t);
+  }
+  if (!replayFailed) {
+    compareOutput(stats.lastTime ?? 0);
+    for (const p of pendingOutput) settleOutput(p);
   }
   if (!replayFailed) {
     for (const issue of replayer.finish()) {
@@ -534,9 +635,174 @@ export function verifyLog(bytes: Uint8Array, options: VerifyOptions = {}): Verif
     report.composition = replayer.composition();
   }
 
+  // ---- Stage 7: activity ----------------------------------------------------------------------
+  const activity = summarizeActivity(records);
+  activity.terminalReuse = reuse.sort((a, b) => a.t - b.t);
+  report.activity = activity;
+  activityFindings(records, report, add);
+
   report.verdict = verdictOf(findings);
   return report;
 }
+
+const shorten = (s: string, n: number) => ([...s].length > n ? `${[...s].slice(0, n - 1).join('')}…` : s);
+const fmtMin = (ms: number) =>
+  ms < 90_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`;
+const fmtClock = (ms: number) => new Date(ms).toISOString().slice(11, 16);
+
+/** Recorder versions older than this lack independent timestamps and the export command. */
+export const OLDEST_FULL_RECORDER = '0.3.0';
+/** Logs tracking more files than this probably recorded a folder broader than the assignment. */
+export const BROAD_FOLDER_FILES = 50;
+/** Time away shorter than this is not listed. */
+const AWAY_MIN_MS = 60_000;
+
+function activityFindings(
+  records: readonly AnyRecord[],
+  report: VerifyReport,
+  add: (f: Finding) => void,
+): void {
+  const activity = report.activity!;
+  const act = (severity: Finding['severity'], code: string, message: string, seq?: number) =>
+    add({ stage: 'activity', severity, code, message, ...(seq !== undefined ? { seq } : {}) });
+
+  // Recorder versions and settings.
+  const versions = new Set<string>();
+  for (const rec of records) {
+    if (rec.k !== Kind.SESSION_START) continue;
+    versions.add(rec.b.ext);
+    for (const [key, value] of Object.entries(rec.b.settings ?? {})) {
+      const why = weakenedSetting(key, value);
+      if (why) act('warn', 'SETTINGS_WEAKENED', `recorded with ${key} = ${String(value)}: ${why}`, rec.s);
+    }
+  }
+  // Only for logs written by the extension itself (other tools may use their own numbering).
+  const byExtension = /^tap-cc-one\/\d+\.\d+\.\d+$/.test(report.header?.tool ?? '');
+  const old = byExtension ? [...versions].filter((v) => compareVersions(v, OLDEST_FULL_RECORDER) < 0) : [];
+  if (old.length > 0) {
+    act(
+      'warn',
+      'RECORDER_OUTDATED',
+      `recorded with TAP-CC-ONE ${old.join(', ')}: no independent timestamps, no AI or terminal-output records. Ask students to install the latest version`,
+    );
+  }
+  for (const c of activity.settingsChanges) {
+    const why = weakenedSetting(c.key, c.to);
+    act(
+      why ? 'warn' : 'info',
+      'SETTINGS_CHANGED',
+      `${c.key} changed from ${String(c.from)} to ${String(c.to)} at ${fmtClock(c.t)} UTC${why ? `: ${why}` : ''}`,
+      c.seq,
+    );
+  }
+
+  // AI: declared choice and actual availability.
+  const choice = activity.aiChoices[activity.aiChoices.length - 1];
+  const aiOnMs = activity.aiOn.reduce((n, p) => n + (p.to - p.from), 0);
+  const periods = activity.aiOn
+    .slice(0, 5)
+    .map((p) => `${fmtClock(p.from)}-${fmtClock(p.to)}`)
+    .join(', ');
+  if (choice === 'off' || choice === 'enforced-off') {
+    act(
+      'info',
+      'AI_DECLARED_OFF',
+      choice === 'enforced-off'
+        ? 'AI features were turned off by the course policy'
+        : 'the student chose to turn AI features off when recording started',
+    );
+    const breach = aiOnWhileDeclaredOff(activity);
+    if (breach.ms > 0) {
+      act(
+        'warn',
+        'AI_ON_AFTER_DECLARED_OFF',
+        `AI features were available for ${fmtMin(breach.ms)} although they were declared off (UTC ${breach.periods
+          .slice(0, 5)
+          .map((p) => `${fmtClock(p.from)}-${fmtClock(p.to)}`)
+          .join(', ')})`,
+      );
+    }
+  } else if (choice === 'on' || choice === 'unanswered') {
+    act(
+      'info',
+      choice === 'on' ? 'AI_DECLARED_ON' : 'AI_NOT_ANSWERED',
+      choice === 'on'
+        ? 'the student chose to keep AI features on'
+        : 'the student did not answer the "turn off AI features?" question',
+    );
+    if (aiOnMs > 0) {
+      act(
+        'info',
+        'AI_AVAILABLE',
+        `AI suggestions or chat were available for ${fmtMin(aiOnMs)} (UTC ${periods})`,
+      );
+    }
+  }
+
+  // Away from the editor.
+  const longAway = activity.away.filter((p) => p.to - p.from >= AWAY_MIN_MS);
+  if (activity.awayMs >= AWAY_MIN_MS) {
+    const longest = activity.away.reduce((a, b) => (b.to - b.from > a.to - a.from ? b : a));
+    act(
+      'info',
+      'AWAY_FROM_EDITOR',
+      `away from the editor window ${activity.away.length} time(s), ${fmtMin(activity.awayMs)} in total; ${longAway.length} time(s) for a minute or more (longest ${fmtMin(longest.to - longest.from)} at ${fmtClock(longest.from)} UTC)`,
+    );
+  }
+
+  // Open outside the recorded folder.
+  for (const o of activity.outside) {
+    const risky = (o.k === 'web' || o.k === 'file' || o.k === 'notebook') && o.visibleMs >= 60_000;
+    if (o.k === 'terminal') continue;
+    act(
+      risky ? 'warn' : 'info',
+      'OPEN_OUTSIDE_FOLDER',
+      `${KIND_TEXT[o.k]} "${o.name}" was open outside the recorded folder (shown ${fmtMin(o.visibleMs)}, open ${fmtMin(o.openMs)})`,
+    );
+  }
+
+  // Terminals.
+  for (const name of activity.unmonitoredTerminals) {
+    act(
+      'warn',
+      'TERMINAL_NOT_MONITORED',
+      `terminal "${name}" could not be monitored (no shell integration): its commands and output are not in the log`,
+    );
+  }
+  if (activity.terminalOutside > 0) {
+    act(
+      'info',
+      'TERMINAL_OUTSIDE_FOLDER',
+      `${activity.terminalOutside} terminal command(s) ran outside the recorded folder`,
+    );
+  }
+  for (const r of activity.terminalReuse) {
+    act(
+      'warn',
+      'TERMINAL_CODE_REUSED',
+      `${r.lines} of ${r.outputLines} code lines printed by the terminal command "${shorten(r.cmd, 120)}" at ${fmtClock(r.t)} UTC later appeared in ${r.files.join(', ')} (found by ${fmtClock(r.foundAt)} UTC)`,
+      r.seq,
+    );
+  }
+
+  // A log that tracks a whole home or Documents folder.
+  if (report.finalFiles.length > BROAD_FOLDER_FILES) {
+    act(
+      'info',
+      'BROAD_FOLDER',
+      `the log tracks ${report.finalFiles.length} files: the recorded folder may be much broader than the assignment`,
+    );
+  }
+}
+
+const KIND_TEXT: Record<string, string> = {
+  file: 'file',
+  untitled: 'unsaved editor',
+  web: 'web page',
+  notebook: 'notebook',
+  terminal: 'terminal',
+  other: 'tab',
+};
 
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
@@ -773,6 +1039,22 @@ function verifyAnchors(
     }
   }
   summary.anchoredCheckpoints = summary.existedBy.length;
+
+  // A clock set behind real time (B4): tokens are written right after the TSA answers, so the
+  // token's time minus the ANCHOR record's own time is the computer clock's error.
+  const offsets = summary.anchors
+    .filter((a) => a.type === 'rfc3161' && a.status === 'valid' && a.time !== undefined)
+    .map((a) => a.time! - a.t)
+    .sort((x, y) => x - y);
+  // Every token must show it (a single late one is an offline queue, not a clock): use the minimum.
+  if (offsets.length >= 2 && offsets[0]! > CLOCK_BEHIND_MS) {
+    add({
+      stage: 'anchors',
+      severity: 'warn',
+      code: 'CLOCK_BEHIND',
+      message: `the computer clock was at least ${Math.round(offsets[0]! / 60_000)} min behind real time: record times are earlier than they really were`,
+    });
+  }
 
   // Coverage: edit records that have an anchored checkpoint after them.
   const lastAnchored =

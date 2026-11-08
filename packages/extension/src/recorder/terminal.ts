@@ -46,3 +46,53 @@ export function programName(commandLine: string): string | undefined {
   const base = first.split(/[\\/]/).pop() ?? first;
   return base.replace(/\.(exe|cmd|bat|ps1)$/i, '').slice(0, 500) || undefined;
 }
+
+// Built from character codes: escape and control characters in regex literals are easy to misread.
+const ESC = String.fromCharCode(27);
+const BEL = String.fromCharCode(7);
+const OSC = new RegExp(`${ESC}\\][^${BEL}${ESC}]*(?:${BEL}|${ESC}\\\\)`, 'g');
+const CSI = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g');
+const ESC2 = new RegExp(`${ESC}[@-Z\\\\-_]`, 'g');
+const CONTROL = new RegExp(
+  `[${String.fromCharCode(0)}-${String.fromCharCode(8)}${String.fromCharCode(11)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]`,
+  'g',
+);
+
+/** Most terminal output kept per command (characters); the total length is recorded too. */
+export const MAX_OUTPUT = 64 * 1024;
+
+/**
+ * Terminal output as stored (D1, D11): escape sequences (colours, cursor moves, shell-integration
+ * markers) removed, carriage-return overwrites applied, secrets masked, at most MAX_OUTPUT
+ * characters. Returns the text and the cleaned length before truncation.
+ */
+export function cleanTerminalOutput(raw: string): { out: string; length: number } {
+  let s = raw
+    // OSC ... BEL / ST (window titles, shell integration "633;..." markers, hyperlinks)
+    .replace(OSC, '')
+    // CSI sequences (colours, cursor movement, erase)
+    .replace(CSI, '')
+    // Other two-character escapes
+    .replace(ESC2, '')
+    .replace(/\r\n/g, '\n');
+  // "progress\rdone" shows "done": keep what is left after the last carriage return of each line.
+  s = s
+    .split('\n')
+    .map((line) => (line.includes('\r') ? line.slice(line.lastIndexOf('\r') + 1) : line))
+    .join('\n');
+  // Remaining control characters except tab and newline.
+  s = s.replace(CONTROL, '');
+  s = s
+    .split('\n')
+    .map((line) => {
+      let m = line;
+      for (const [re, replacement] of RULES) m = m.replace(re, replacement);
+      return m;
+    })
+    .join('\n');
+  const length = s.length;
+  if (length > MAX_OUTPUT) s = s.slice(0, MAX_OUTPUT);
+  // Do not end inside a surrogate pair.
+  if (/[\ud800-\udbff]$/.test(s)) s = s.slice(0, -1);
+  return { out: s, length };
+}

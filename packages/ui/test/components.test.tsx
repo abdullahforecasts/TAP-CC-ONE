@@ -64,6 +64,7 @@ describe('viewer components', () => {
       'check warn',
       'check pass',
       'check none',
+      'check none',
     ]);
     const entries = root.querySelectorAll('[data-testid="history-entry"]');
     expect(entries).toHaveLength(4);
@@ -136,7 +137,7 @@ describe('viewer components', () => {
     expect(res.data.report.recordCount).toBe(0);
     expect(res.data.model.recordCount).toBe(2);
     expect(root.querySelector('.integrity-head')?.textContent).toContain('2 records readable');
-    const files = [...root.querySelectorAll('.check')].at(-1)!;
+    const files = [...root.querySelectorAll('.check')].at(-2)!;
     expect(files.textContent).toContain('Matches the submitted files');
     expect(files.textContent).toContain('Not checked');
   });

@@ -4,6 +4,7 @@
  *
  * Author: Abdullah Nawaz. License: MIT.
  */
+export * from './activity.js';
 export * from './bytes.js';
 export * from './cbor.js';
 export * from './changes.js';

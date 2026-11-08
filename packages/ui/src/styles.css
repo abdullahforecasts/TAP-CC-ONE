@@ -41,6 +41,7 @@
   --o-internal-copy: color-mix(in srgb, var(--c-yellow) 40%, #f5c400);
   --o-paste: var(--c-red);
   --o-bulk: var(--c-purple);
+  --o-completion: color-mix(in srgb, var(--c-purple) 45%, var(--bg));
   --o-preexisting: var(--c-gray);
   --o-created: color-mix(in srgb, var(--c-gray) 60%, var(--c-blue));
   --o-external: var(--c-orange);
@@ -515,6 +516,9 @@ input:focus-visible,
 .o-bulk {
   --swatch: var(--o-bulk);
 }
+.o-completion {
+  --swatch: var(--o-completion);
+}
 .o-preexisting {
   --swatch: var(--o-preexisting);
 }
@@ -584,6 +588,39 @@ input:focus-visible,
 }
 .range.unfocused {
   fill: color-mix(in srgb, var(--c-gray) 25%, transparent);
+}
+.range.ai {
+  fill: color-mix(in srgb, var(--c-purple) 40%, transparent);
+}
+
+/* Points a reviewer should look at (activity findings). */
+.review {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--c-yellow);
+  background: color-mix(in srgb, var(--c-yellow) 8%, transparent);
+}
+.review h3 {
+  margin: 0 0 0.25rem;
+  font-size: 0.95em;
+}
+.review ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+.review li.warn {
+  font-weight: 600;
+}
+.event .output {
+  margin: 0.25rem 0 0;
+}
+.event .output pre {
+  max-height: 16rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 0.25rem 0 0;
+  padding: 0.5rem;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
 
 .mark circle,

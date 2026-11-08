@@ -46,6 +46,11 @@ function snap(f: number, path: string, text: string, origin = 'preexisting' as c
   return { f, path, origin, text, h: contentHash(text), eol: 'lf' as const, enc: 'utf8' };
 }
 
+/** Typing inserts one character per change (a multi-character insert is a completion or a tool). */
+function charByChar(text: string, off = 0): Array<[number, number, number, string]> {
+  return [...text].map((ch, i) => [1, off + i, 0, ch] as [number, number, number, string]);
+}
+
 describe('LogWriter', () => {
   it('writes a log that reads back with an intact chain', () => {
     const w = newWriter();
@@ -292,7 +297,7 @@ describe('Replayer', () => {
   it('keeps typed provenance outside a resynced region', () => {
     const r = new Replayer({ provenance: true });
     r.apply(rec(0, 'FILE_SNAPSHOT', snap(0, 'a.txt', '')));
-    r.apply(rec(1, 'EDIT_BATCH', { f: 0, c: [[1, 0, 0, 'hello world']] }));
+    r.apply(rec(1, 'EDIT_BATCH', { f: 0, c: charByChar('hello world') }));
     r.apply(rec(2, 'FILE_SNAPSHOT', snap(0, 'a.txt', 'hello WORLD', 'resync' as never)));
     const comp = r.composition();
     expect(comp.byOrigin.typed?.chars).toBe(6);
@@ -544,7 +549,7 @@ describe('provenance of replacements, undo and redo (spec §7.1)', () => {
     const withLine = 'int main() {\n    cout << 1;\n    return 0;\n}\n';
     const records = recordsOf((w) => {
       w.append('FILE_SNAPSHOT', snap(0, 'a.cpp', '', 'created' as never), T);
-      w.append('EDIT_BATCH', { f: 0, c: [[0, 0, 0, typed]] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: charByChar(typed) }, T);
       // Copilot-style apply: the whole document replaced by the old text plus one line.
       w.append('EDIT_BATCH', { f: 0, c: [[0, 0, typed.length, withLine, Flag.BULK]] }, T);
     });
@@ -559,7 +564,7 @@ describe('provenance of replacements, undo and redo (spec §7.1)', () => {
   it('undo brings removed text back with the origin it had', () => {
     const records = recordsOf((w) => {
       w.append('FILE_SNAPSHOT', snap(0, 'a.cpp', '', 'created' as never), T);
-      w.append('EDIT_BATCH', { f: 0, c: [[0, 0, 0, typed]] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: charByChar(typed) }, T);
       w.append('EDIT_BATCH', { f: 0, c: [[0, 13, 14, '']] }, T); // delete the return line
       w.append('EDIT_BATCH', { f: 0, c: [[0, 13, 0, '    return 0;\n', Flag.UNDO]] }, T);
       w.append('EDIT_BATCH', { f: 0, c: [[0, 0, 0, '// x\n', Flag.UNDO]] }, T); // never removed
@@ -573,7 +578,7 @@ describe('provenance of replacements, undo and redo (spec §7.1)', () => {
   it('a replay resumed from a snapshot attributes undo the same way', () => {
     const records = recordsOf((w) => {
       w.append('FILE_SNAPSHOT', snap(0, 'a.cpp', '', 'created' as never), T);
-      w.append('EDIT_BATCH', { f: 0, c: [[0, 0, 0, typed]] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: charByChar(typed) }, T);
       w.append('EDIT_BATCH', { f: 0, c: [[0, 13, 14, '']] }, T);
       w.append('EDIT_BATCH', { f: 0, c: [[0, 13, 0, '    return 0;\n', Flag.UNDO]] }, T);
     });

@@ -110,6 +110,7 @@ export type EventCategory =
   | 'file'
   | 'session'
   | 'pause'
+  | 'environment'
   | 'integrity';
 
 export interface LogEvent {
@@ -124,6 +125,8 @@ export interface LogEvent {
   chars?: number;
   /** Severity hint for the list. */
   tone?: 'normal' | 'notice' | 'warning';
+  /** Terminal output of a run (cleaned by the recorder). */
+  output?: string;
 }
 
 export interface SessionInfo {
@@ -144,6 +147,10 @@ export interface SessionInfo {
   settings: Record<string, string | number | boolean>;
   /** Fingerprint of the session's signing key. */
   key: string;
+  /** The student's answer to "turn off AI features while recording?" (recorder 0.3.3+). */
+  aiChoice?: string;
+  /** The teacher's policy from .tap/config.json, if any. */
+  policy?: Record<string, string | number | boolean>;
 }
 
 /** One minute of activity, for the timeline's typing lane. */
@@ -181,6 +188,8 @@ export interface TimelineData {
   markers: Marker[];
   pauses: Range[];
   unfocused: Range[];
+  /** When AI suggestions or chat were available (recorder 0.3.3+). */
+  aiOn: Range[];
   sessions: Range[];
 }
 

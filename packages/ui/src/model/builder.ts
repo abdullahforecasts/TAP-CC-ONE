@@ -91,6 +91,11 @@ export class LogModelBuilder {
   private readonly markers: Marker[] = [];
   private readonly pauses: Range[] = [];
   private readonly unfocused: Range[] = [];
+  private readonly aiOn: Range[] = [];
+  private openAi: Range | undefined;
+  /** Things open outside the folder (kind + name → shown). */
+  private outside = new Map<string, boolean>();
+  private readonly unmonitored = new Set<string>();
   private readonly sessionRanges: Range[] = [];
   private openPause: Range | undefined;
   private openUnfocus: Range | undefined;
@@ -177,7 +182,22 @@ export class LogModelBuilder {
           settings,
           key: keyFingerprint(b.pub),
         };
+        if (b.aiChoice) session.aiChoice = b.aiChoice;
+        if (b.policy) {
+          const policy: Record<string, string | number | boolean> = {};
+          for (const [k, v] of Object.entries(b.policy)) {
+            if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') policy[k] = v;
+          }
+          session.policy = policy;
+        }
         this.sessions.push(session);
+        this.outside = new Map();
+        if (b.ai) this.setAi(b.ai.on, rec);
+        if (b.aiChoice && b.aiChoice !== 'unanswered') {
+          this.event(rec, 'environment', AI_CHOICE_TEXT[b.aiChoice] ?? `AI choice: ${b.aiChoice}`, {
+            tone: b.aiChoice === 'on' ? 'notice' : 'normal',
+          });
+        }
         this.openSession = { from: rec.t, to: rec.t, seqFrom: rec.s };
         const ai = b.aiExt.length > 0 ? ` · AI extensions: ${b.aiExt.join(', ')}` : '';
         this.event(rec, 'session', `Session ${session.index} started`, {
@@ -312,7 +332,15 @@ export class LogModelBuilder {
             runs: [run],
           });
         }
-        const ev = this.event(rec, 'run', `Ran ${runLabel(run)}`, { detail: 'still running' });
+        const ev = this.event(
+          rec,
+          'run',
+          `Ran ${runLabel(run)}${b.outside ? ' (outside the recorded folder)' : ''}`,
+          {
+            detail: b.cmd ? `${b.cmd} · still running` : 'still running',
+            ...(b.outside ? { tone: 'notice' as const } : {}),
+          },
+        );
         this.runEvents.set(run, ev);
         break;
       }
@@ -325,8 +353,17 @@ export class LogModelBuilder {
         const ev = this.runEvents.get(run);
         const failed = run.exit !== undefined && run.exit !== 0;
         if (ev) {
-          ev.detail = run.exit === undefined ? 'finished' : `exit code ${run.exit}`;
+          const status = run.exit === undefined ? 'finished' : `exit code ${run.exit}`;
+          ev.detail = ev.detail?.endsWith('still running')
+            ? ev.detail.replace(/still running$/, status)
+            : status;
           if (failed) ev.tone = 'notice';
+          if (rec.b.out !== undefined && rec.b.out.length > 0) {
+            ev.output =
+              rec.b.outLen !== undefined && rec.b.outLen > rec.b.out.length
+                ? `${rec.b.out}\n… (${rec.b.outLen - rec.b.out.length} more characters not kept)`
+                : rec.b.out;
+          }
         }
         const m: Marker = {
           t: run.t,
@@ -384,11 +421,95 @@ export class LogModelBuilder {
         });
         break;
       case Kind.ENV_CHANGE: {
+        const b = rec.b;
         const parts: string[] = [];
-        if (rec.b.aiExt) parts.push(`AI extensions: ${rec.b.aiExt.length ? rec.b.aiExt.join(', ') : 'none'}`);
-        if (rec.b.liveShare !== undefined) parts.push(`Live Share ${rec.b.liveShare ? 'on' : 'off'}`);
-        if (rec.b.vsc) parts.push(`editor ${rec.b.vsc}`);
-        this.event(rec, 'session', 'Environment changed', { detail: parts.join(' · ') });
+        if (b.aiExt) parts.push(`AI extensions: ${b.aiExt.length ? b.aiExt.join(', ') : 'none'}`);
+        if (b.liveShare !== undefined) parts.push(`Live Share ${b.liveShare ? 'on' : 'off'}`);
+        if (b.vsc) parts.push(`editor ${b.vsc}`);
+        if (parts.length > 0)
+          this.event(rec, 'session', 'Environment changed', { detail: parts.join(' · ') });
+        if (b.aiChoice) {
+          const session = this.sessions.at(-1);
+          if (session) session.aiChoice = b.aiChoice;
+          this.event(rec, 'environment', AI_CHOICE_TEXT[b.aiChoice] ?? `AI choice: ${b.aiChoice}`, {
+            tone: b.aiChoice === 'on' ? 'notice' : 'normal',
+          });
+        }
+        if (b.ai) {
+          const was = this.openAi !== undefined;
+          this.setAi(b.ai.on, rec);
+          if (was !== b.ai.on) {
+            this.event(
+              rec,
+              'environment',
+              b.ai.on ? 'AI features became available' : 'AI features turned off',
+              {
+                detail: b.ai.active.length > 0 ? `active: ${b.ai.active.join(', ')}` : '',
+                tone: b.ai.on ? 'notice' : 'normal',
+              },
+            );
+          }
+        }
+        if (b.settings) {
+          const session = this.sessions.at(-1);
+          const changed: string[] = [];
+          for (const [k, v] of Object.entries(b.settings)) {
+            if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') continue;
+            if (session && session.settings[k] !== v) {
+              changed.push(`${k} = ${String(v)}`);
+              session.settings[k] = v;
+            }
+          }
+          if (changed.length > 0) {
+            this.event(rec, 'environment', 'TAP settings changed', {
+              detail: changed.join(' · '),
+              tone: 'warning',
+            });
+          }
+        }
+        if (b.editor) {
+          this.event(rec, 'environment', 'Editor suggestion settings changed', {
+            detail: Object.entries(b.editor)
+              .filter(([k]) => k.startsWith('editor.') || k.startsWith('terminal.'))
+              .map(([k, v]) => `${k} = ${String(v)}`)
+              .join(' · '),
+          });
+        }
+        if (b.open) {
+          const next = new Map<string, (typeof b.open)[number]>(
+            b.open.map((o) => [`${o.k}\u0000${o.name}`, o]),
+          );
+          for (const [key, o] of next) {
+            if (o.k === 'terminal' && o.mon === false && !this.unmonitored.has(o.name)) {
+              this.unmonitored.add(o.name);
+              this.event(rec, 'integrity', `Terminal "${o.name}" could not be monitored`, {
+                detail: 'no shell integration: its commands and output are not in the log',
+                tone: 'warning',
+              });
+            }
+            if (o.k === 'terminal') continue;
+            const before = this.outside.get(key);
+            if (before === undefined) {
+              this.event(
+                rec,
+                'environment',
+                `Opened outside the recorded folder: ${OPEN_KIND[o.k] ?? o.k} "${o.name}"`,
+                {
+                  tone: o.k === 'web' || o.k === 'file' || o.k === 'notebook' ? 'notice' : 'normal',
+                },
+              );
+            }
+          }
+          for (const key of this.outside.keys()) {
+            if (!next.has(key)) {
+              const [k, name] = key.split('\u0000') as [string, string];
+              this.event(rec, 'environment', `Closed: ${OPEN_KIND[k] ?? k} "${name}"`);
+            }
+          }
+          this.outside = new Map(
+            [...next].filter(([, o]) => o.k !== 'terminal').map(([key, o]) => [key, o.vis === true] as const),
+          );
+        }
         break;
       }
       default:
@@ -422,7 +543,7 @@ export class LogModelBuilder {
     }
     if (e.origin === 'typed') bucket.typed += e.ins.length;
     else if (PASTE_ORIGINS.has(e.origin)) bucket.pasted += e.ins.length;
-    else if (e.origin === 'bulk') bucket.bulk += e.ins.length;
+    else if (e.origin === 'bulk' || e.origin === 'completion') bucket.bulk += e.ins.length;
     else bucket.other += e.ins.length;
 
     if (PASTE_ORIGINS.has(e.origin) || e.origin === 'bulk') {
@@ -546,8 +667,23 @@ export class LogModelBuilder {
     this.openPause = undefined;
   }
 
+  /** Opens or closes the "AI available" range. */
+  private setAi(on: boolean, rec: AnyRecord): void {
+    if (on && !this.openAi) this.openAi = { from: rec.t, to: rec.t, seqFrom: rec.s };
+    if (!on && this.openAi) {
+      this.openAi.to = rec.t;
+      this.aiOn.push(this.openAi);
+      this.openAi = undefined;
+    }
+  }
+
   private closeSession(t: number): void {
     this.closePause(t);
+    if (this.openAi) {
+      this.openAi.to = t;
+      this.aiOn.push(this.openAi);
+      this.openAi = undefined;
+    }
     if (this.openUnfocus) {
       this.openUnfocus.to = t;
       this.unfocused.push(this.openUnfocus);
@@ -596,6 +732,7 @@ export class LogModelBuilder {
         markers: this.markers,
         pauses: close(this.openPause, this.pauses),
         unfocused: close(this.openUnfocus, this.unfocused),
+        aiOn: close(this.openAi, this.aiOn),
         sessions: close(this.openSession, this.sessionRanges),
       },
       composition,
@@ -680,6 +817,20 @@ export function intervalStats(
   return stats;
 }
 
+const AI_CHOICE_TEXT: Record<string, string> = {
+  off: 'The student chose to turn AI features off while recording',
+  on: 'The student chose to keep AI features on',
+  'enforced-off': 'AI features turned off by the course policy',
+};
+
+const OPEN_KIND: Record<string, string> = {
+  file: 'file',
+  untitled: 'unsaved editor',
+  web: 'web page',
+  notebook: 'notebook',
+  other: 'tab',
+};
+
 function runLabel(run: RunInfo): string {
   const what = run.kind === 'debug' ? 'debug session' : run.kind;
   return run.name ? `${what} "${run.name}"` : what;
@@ -721,6 +872,13 @@ export function weakenings(session: SessionInfo | undefined): Weakening[] {
       setting: 'tap.record.terminalCommands',
       value: 'false',
       why: 'Commands run in the terminal (compiling, running the program) are not recorded.',
+    });
+  }
+  if (typeof s['tap.ignored'] === 'string' && s['tap.ignored'] !== '') {
+    out.push({
+      setting: 'tap.ignored',
+      value: String(s['tap.ignored']),
+      why: 'Weaker settings were set for this folder; TAP ignored them and recorded the attempt.',
     });
   }
   if (session.liveShare) {

@@ -4,11 +4,11 @@ Records a tamper-evident history of how your code was written, so you can show t
 
 **Author:** Abdullah Nawaz · **License:** PolyForm Noncommercial 1.0.0 (commercial use by agreement) · **Source:** [github.com/abdullahforecasts/TAP-CC-ONE](https://github.com/abdullahforecasts/TAP-CC-ONE)
 
-> Status: 0.3.0, development build (Part 4 of the plan). The teacher's batch checker arrives in the next release.
+> Status: 0.3.3, development build (Part 4 of the plan, with the fixes from the first classroom test). The teacher's batch checker arrives in the next release.
 
 ## How it works
 
-1. Open a folder with code. The extension asks: **Record authorship history for this folder?** Choose **Start**.
+1. Open a folder with code. The extension asks: **Record authorship history for this folder?** Choose **Start**. It then asks whether to turn off AI features (inline suggestions and AI chat) while recording; your answer is written in the log.
 2. Code as usual. The status bar shows `● TAP` while recording.
 3. Everything is written to `.tap/log.codelog` in your folder: what you typed, pasted, undid, saved and ran, with timing. The file is binary and every record is linked to the previous one by a hash chain, and signed checkpoints are written every few minutes, so any later edit to the file is detectable.
 4. Every 10 minutes while you work, and whenever you pause, stop or export, the newest checkpoint is timestamped by independent services (see below), which proves the work existed at that time.
@@ -50,13 +50,16 @@ Turning timestamps off (`tap.anchoring.enabled`) is allowed but is shown to the 
 | Undo, redo, multi-cursor and save-time formatting edits | Anything outside the recorded folder |
 | Saves, file creation, renames and deletions | Absolute paths, your user name, your computer's name |
 | Changes made to files by other programs (as snapshots) | Other programs, browser tabs, websites you visit |
-| Debug sessions and tasks you run, with exit codes | Terminal output, and anything you type into a running program |
-| Commands you run in VS Code's terminal (full command line, passwords and tokens masked), with exit codes | |
+| The names of files, web pages and terminals open in VS Code outside the folder | Their contents and full paths |
+| Debug sessions and tasks you run, with exit codes | Anything you type into a running program |
+| Commands you run in VS Code's terminal (full command line, passwords and tokens masked), with exit codes and output (at most 64 000 characters per command) | |
 | Timestamp tokens from the services above | |
 | Window focus changes (can be turned off) | |
 | Pauses, and what changed while paused | |
 | Your notes (`TAP: Add Note to Log`) | |
-| VS Code version, editor name, operating system, and which AI-assistant extensions are enabled | |
+| VS Code version, editor name, operating system, which AI-assistant extensions are enabled, whether AI features were on or off, and your answer to the AI question | |
+| The TAP settings in effect, and every change to them | |
+| Suggestion settings, and how many snippets and text-typing keybindings you have (not their contents) | |
 
 ## Commands
 
@@ -81,13 +84,33 @@ Turning timestamps off (`tap.anchoring.enabled`) is allowed but is shown to the 
 | `tap.include` / `tap.exclude` | code files / build and dependency folders | Copied into `.tap/config.json` when recording starts |
 | `tap.maxFileSizeKB` | `1024` | Larger files are not recorded |
 | `tap.record.focus` | `true` | Record window focus changes |
-| `tap.classify.clipboardCheckMinChars` | `2` | Insertions this long are compared with the clipboard |
-| `tap.classify.bulkMinChars` | `40` | Longer non-paste insertions are marked as bulk (completions, snippets, AI) |
-| `tap.checkpoint.intervalSec` | `300` | How often a signed checkpoint is written |
-| `tap.record.terminalCommands` | `true` | Record terminal commands (needs terminal shell integration) |
+| `tap.classify.clipboardCheckMinChars` | `2` | Insertions this long are compared with the clipboard (1–2) |
+| `tap.classify.bulkMinChars` | `40` | Longer non-paste insertions are marked as bulk (2–40; the verifier also applies 40 itself) |
+| `tap.checkpoint.intervalSec` | `300` | How often a signed checkpoint is written (60–600) |
+| `tap.record.terminalCommands` | `true` | Record terminal commands and their output (needs terminal shell integration) |
 | `tap.anchoring.enabled` | `true` | Timestamp checkpoints with independent services |
-| `tap.anchoring.intervalSec` | `600` | How often the newest checkpoint is timestamped while you work |
+| `tap.anchoring.intervalSec` | `600` | How often the newest checkpoint is timestamped while you work (120–900) |
 | `tap.anchoring.tsa` / `tap.anchoring.ots` | FreeTSA, DigiCert, Sectigo / three public calendars | Which services to use |
+| `tap.checkForUpdates` | `true` | Check once a day for a newer release |
+
+The settings in effect are written in the log when recording starts, and every change is recorded. Values outside the ranges above are ignored, and the attempt is recorded.
+
+### Exam mode (for teachers)
+
+Start recording the starter folder once so `.tap/config.json` is created, stop, add a `policy` to that file, and hand the folder out (without `.tap/log.codelog`):
+
+```json
+"policy": { "ai": "off", "suggestions": "off", "lockSettings": true, "requireShellIntegration": true }
+```
+
+| Key | Values | |
+|---|---|---|
+| `ai` | `ask` (default), `off`, `on` | `off` turns AI features off without asking; `on` does not ask |
+| `suggestions` | `on` (default), `off` | `off` turns word-based, snippet and tab-completion suggestions off for the folder |
+| `lockSettings` | `false` (default), `true` | The recorder ignores the student's TAP settings and uses the defaults |
+| `requireShellIntegration` | `false` (default), `true` | Turns terminal shell integration on so commands and output can be recorded |
+
+The config file's hash is in every session of the log, so a changed policy is visible.
 
 ## Files in `.tap/`
 

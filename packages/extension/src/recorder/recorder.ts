@@ -16,6 +16,8 @@
  * the disk.
  */
 import {
+  type AiChoice,
+  type AiState,
   type AnchorBody,
   type BodyByKind,
   bytesEqual,
@@ -86,6 +88,10 @@ export interface SessionEnvironment {
   liveShare: boolean;
   cfgHash: Uint8Array;
   settings: Record<string, boolean | number | string>;
+  aiChoice?: AiChoice;
+  ai?: AiState;
+  editor?: Record<string, boolean | number | string>;
+  policy?: Record<string, boolean | number | string>;
 }
 
 export interface RecorderSettings extends ClassifySettings {
@@ -126,6 +132,21 @@ export const DEFAULT_SETTINGS: RecorderSettings = {
   reloadWaitMs: 150,
   diskSweepIntervalMs: 60_000,
 };
+
+/**
+ * Settings can only make recording stricter (H2): a larger paste-check threshold would let pastes
+ * pass as typing, so values outside these ranges are brought back into them.
+ */
+export function clampSettings(s: RecorderSettings): RecorderSettings {
+  const clamp = (v: number, lo: number, hi: number, fallback: number) =>
+    Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback;
+  return {
+    ...s,
+    clipboardCheckMinChars: clamp(s.clipboardCheckMinChars, 1, 2, 2),
+    bulkMinChars: clamp(s.bulkMinChars, 2, 40, 40),
+    checkpointIntervalMs: clamp(s.checkpointIntervalMs, 60_000, 600_000, 300_000),
+  };
+}
 
 export interface RecorderOptions {
   writer: LogWriter;
@@ -253,7 +274,7 @@ export class Recorder {
     this.host = options.host;
     this.key = options.key;
     this.env = options.env;
-    this.settings = { ...DEFAULT_SETTINGS, ...options.settings };
+    this.settings = clampSettings({ ...DEFAULT_SETTINGS, ...options.settings });
     this.diskHash = new Map(options.diskHashes ?? []);
     for (const file of this.writer.state.files.values()) this.registry.set(file.path, file.f);
     const ids = [...this.writer.state.files.keys(), ...this.writer.state.retired];
@@ -335,6 +356,10 @@ export class Recorder {
         liveShare: env.liveShare,
         cfgHash: env.cfgHash,
         settings: env.settings,
+        ...(env.aiChoice ? { aiChoice: env.aiChoice } : {}),
+        ...(env.ai ? { ai: env.ai } : {}),
+        ...(env.editor ? { editor: env.editor } : {}),
+        ...(env.policy ? { policy: env.policy } : {}),
       },
       time,
     );
@@ -681,7 +706,7 @@ export class Recorder {
   runStarted(
     kind: 'debug' | 'task' | 'terminal',
     name?: string,
-    details: { cmd?: string; cwd?: string } = {},
+    details: { cmd?: string; cwd?: string; outside?: boolean } = {},
   ): number {
     const rid = this.nextRid++;
     if (this.stateValue !== 'recording') return rid;
@@ -691,6 +716,7 @@ export class Recorder {
     if (name) body.name = name.slice(0, 500);
     if (details.cmd) body.cmd = details.cmd.slice(0, 8000);
     if (details.cwd !== undefined) body.cwd = details.cwd;
+    if (details.outside) body.outside = true;
     this.enqueue(async () => {
       await this.appendEdits(upTo);
       this.append('RUN_START', body, time);
@@ -698,12 +724,16 @@ export class Recorder {
     return rid;
   }
 
-  runEnded(rid: number, exit?: number): void {
+  runEnded(rid: number, exit?: number, output?: { out: string; length: number }): void {
     if (this.stateValue !== 'recording') return;
     const upTo = this.seal();
     const time = this.now();
     const body: BodyByKind['RUN_END'] = { rid };
     if (exit !== undefined && Number.isSafeInteger(exit)) body.exit = exit;
+    if (output && output.length > 0) {
+      body.out = output.out;
+      body.outLen = output.length;
+    }
     this.enqueue(async () => {
       await this.appendEdits(upTo);
       this.append('RUN_END', body, time);

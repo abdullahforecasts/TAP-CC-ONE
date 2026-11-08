@@ -252,6 +252,26 @@ export class AnchorService {
   }
 
   /**
+   * Retries every outstanding request of a log right away and waits up to `ms` for all of them
+   * (export uses this before warning that timestamps are still queued). Returns how many are left.
+   */
+  async waitForAll(logId: string, ms: number): Promise<number> {
+    const deadline = Date.now() + ms;
+    const left = () => this.outstanding(logId);
+    while (left() > 0 && Date.now() < deadline) {
+      const now = this.deps.now();
+      for (const j of this.q.jobs)
+        if (j.logId === logId && j.type !== 'ots-upgrade' && !j.ready) j.nextAt = Math.min(j.nextAt, now);
+      await this.process();
+      if (left() === 0) break;
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, Math.max(10, Math.min(1000, deadline - Date.now()))),
+      );
+    }
+    return left();
+  }
+
+  /**
    * Runs every job that is due. Safe to call often: calls during a run join it, and the run
    * repeats once so that jobs added meanwhile are seen.
    */

@@ -59,3 +59,49 @@ export function normaliseAppName(appName: string): string {
   if (name.includes('visual studio code') || name === 'code') return 'vscode';
   return name.replace(/[^a-z0-9.-]+/g, '-').slice(0, 100) || 'unknown';
 }
+
+/** Whether an extension id is a known AI assistant (case-insensitive). */
+export function isAiExtension(id: string): boolean {
+  return AI_SET.has(id.toLowerCase());
+}
+
+/** Raw editor state that decides whether AI could show or insert code (G1, G3). */
+export interface AiInputs {
+  /** editor.inlineSuggest.enabled */
+  inlineSuggest: boolean;
+  /** chat.disableAIFeatures */
+  disableAiFeatures: boolean;
+  /** github.copilot.enable["*"] (true when unset) */
+  copilotEnabled: boolean;
+  /** Ids of AI-assist extensions that are installed and enabled. */
+  installed: string[];
+  /** Ids of AI-assist extensions that are active right now. */
+  active: string[];
+}
+
+/**
+ * AI counts as available when AI features are not turned off (chat.disableAIFeatures) and an AI
+ * assistant is installed. `inline` says whether ghost-text suggestions can appear as well.
+ */
+export function aiStateOf(i: AiInputs): { on: boolean; inline: boolean; chat: boolean; active: string[] } {
+  const chat = !i.disableAiFeatures;
+  const assistant = i.installed.length > 0;
+  const copilotOnly = assistant && i.installed.every((id) => id.startsWith('github.copilot'));
+  const inline = chat && assistant && i.inlineSuggest && !(copilotOnly && !i.copilotEnabled);
+  return { on: chat && assistant, inline, chat, active: [...i.active].sort() };
+}
+
+/** Workspace-folder settings that turn AI features off (G2, G4). */
+export const AI_OFF_SETTINGS: ReadonlyArray<[section: string, key: string, value: unknown]> = [
+  ['editor', 'inlineSuggest.enabled', false],
+  ['chat', 'disableAIFeatures', true],
+  ['github.copilot', 'enable', { '*': false }],
+];
+
+/** Workspace-folder settings that turn editor code suggestions off (exam policy "suggestions": "off"). */
+export const SUGGESTIONS_OFF_SETTINGS: ReadonlyArray<[section: string, key: string, value: unknown]> = [
+  ['editor', 'wordBasedSuggestions', 'off'],
+  ['editor', 'snippetSuggestions', 'none'],
+  ['editor', 'tabCompletion', 'off'],
+  ['editor', 'suggest.showSnippets', false],
+];

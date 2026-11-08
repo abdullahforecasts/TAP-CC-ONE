@@ -69,7 +69,7 @@ function kinds(bytes: Uint8Array): string[] {
 }
 
 function status() {
-  return ui.statusItems[ui.statusItems.length - 1]!;
+  return ui.statusItems.find((i) => i.name === 'TAP-CC-ONE')!;
 }
 
 describe('extension activation', () => {
@@ -219,7 +219,11 @@ describe('recording through VS Code events', () => {
     const problems = report.findings.filter(
       (f) =>
         f.severity === 'fail' ||
-        (f.severity === 'warn' && f.code !== 'NO_ANCHORS' && f.code !== 'PAUSED_GAP_CHANGES'),
+        (f.severity === 'warn' &&
+          f.code !== 'NO_ANCHORS' &&
+          f.code !== 'PAUSED_GAP_CHANGES' &&
+          // these tests turn timestamping off, which the log discloses
+          !(f.code === 'SETTINGS_WEAKENED' && f.message.includes('anchoring'))),
     );
     expect(problems).toEqual([]);
     expect(report.finalFiles.map((f) => f.path)).toEqual(['helpers.h', 'main.c']);
@@ -520,13 +524,19 @@ describe('timestamps, terminal commands, export and opening submissions', () => 
     const exec = {
       commandLine: { value: 'gcc main.c -o app && MYSQL_PASSWORD=hunter2 ./app' },
       cwd: fake.Uri.file(ws),
+      async *read() {
+        yield '\u001b[32mok\u001b[0m\r\n';
+        yield 'token sk-abcdefghijklmnopqrstuvwx\r\n';
+      },
     };
     driver.emitters.terminalStart.fire({ execution: exec });
+    await new Promise((r) => setTimeout(r, 10));
     driver.emitters.terminalEnd.fire({ execution: exec, exitCode: 0 });
-    // A command in another folder's terminal is not ours.
-    driver.emitters.terminalStart.fire({
-      execution: { commandLine: { value: 'ls' }, cwd: fake.Uri.file('/elsewhere') },
-    });
+    // A command after "cd ~" is recorded too, marked as outside the folder (0.3.3).
+    const outside = { commandLine: { value: 'ls' }, cwd: fake.Uri.file('/elsewhere') };
+    driver.emitters.terminalStart.fire({ execution: outside });
+    driver.emitters.terminalEnd.fire({ execution: outside, exitCode: 0 });
+    await new Promise((r) => setTimeout(r, 600));
 
     await vscode.commands.executeCommand('tap.timestampNow');
     expect(ui.messages.at(-1)!.text).toMatch(/timestamped by 2 independent service/);
@@ -535,8 +545,19 @@ describe('timestamps, terminal commands, export and opening submissions', () => 
     const runs = readLog(logBytes())
       .records.map((r) => r.record)
       .filter((r) => r.k === Kind.RUN_START);
-    expect(runs.map((r) => (r.k === Kind.RUN_START ? [r.b.kind, r.b.name, r.b.cmd] : []))).toEqual([
-      ['terminal', 'gcc', 'gcc main.c -o app && MYSQL_PASSWORD=*** ./app'],
+    expect(
+      runs.map((r) => (r.k === Kind.RUN_START ? [r.b.kind, r.b.name, r.b.cmd, r.b.outside ?? false] : [])),
+    ).toEqual([
+      ['terminal', 'gcc', 'gcc main.c -o app && MYSQL_PASSWORD=*** ./app', false],
+      ['terminal', 'ls', 'ls', true],
+    ]);
+    const ends = readLog(logBytes())
+      .records.map((r) => r.record)
+      .filter((r) => r.k === Kind.RUN_END);
+    // Output without colour codes, secrets masked.
+    expect(ends.map((r) => (r.k === Kind.RUN_END ? r.b.out : undefined))).toEqual([
+      'ok\ntoken ***\n',
+      undefined,
     ]);
 
     // Export: a zip with the log, the code and instructions; the teacher opens it read-only.
@@ -618,5 +639,151 @@ describe('the bundled extension', () => {
     } finally {
       Module._load = original;
     }
+  });
+});
+
+describe('0.3.3: AI choice, policy, outside files, open tabs and export checks', () => {
+  function records() {
+    return readLog(logBytes()).records.map((r) => r.record);
+  }
+
+  it('asks whether to turn AI off, applies the answer and records it', async () => {
+    fake.extensions.all = [{ id: 'GitHub.copilot', isActive: true }];
+    driver.addFolder(ws);
+    await start();
+    ui.answers.push('Turn off AI');
+    await vscode.commands.executeCommand('tap.start');
+    await until(() => records().some((r) => r.k === Kind.ENV_CHANGE && r.b.aiChoice === 'off'));
+    expect(ui.messages.some((m) => /turn off AI features/.test(m.text))).toBe(true);
+    expect(driver.configuration.get('editor.inlineSuggest.enabled')).toBe(false);
+    expect(driver.configuration.get('chat.disableAIFeatures')).toBe(true);
+    const start0 = records().find((r) => r.k === Kind.SESSION_START)!;
+    expect(start0.k === Kind.SESSION_START && start0.b.aiChoice).toBe('unanswered');
+    expect(start0.k === Kind.SESSION_START && start0.b.ai?.on).toBe(true);
+    // The AI state change is recorded too.
+    await until(() => records().some((r) => r.k === Kind.ENV_CHANGE && r.b.ai?.on === false));
+    const report = verifyLog(logBytes());
+    expect(report.findings.map((f) => f.code)).toContain('AI_DECLARED_OFF');
+    expect(report.findings.map((f) => f.code)).not.toContain('AI_ON_AFTER_DECLARED_OFF');
+  });
+
+  it('a course policy turns AI and suggestions off without asking', async () => {
+    fs.mkdirSync(path.join(ws, '.tap'));
+    fs.writeFileSync(
+      path.join(ws, '.tap', 'config.json'),
+      JSON.stringify({
+        version: 1,
+        label: 'lab',
+        include: ['**/*.c'],
+        exclude: [],
+        maxFileSizeKB: 1024,
+        policy: { ai: 'off', suggestions: 'off', lockSettings: true, requireShellIntegration: true },
+      }),
+    );
+    driver.configuration.set('tap.record.focus', false);
+    driver.addFolder(ws);
+    await start();
+    await until(() => fs.existsSync(path.join(ws, '.tap', 'log.codelog')));
+    const first = records().find((r) => r.k === Kind.SESSION_START)!;
+    if (first.k !== Kind.SESSION_START) throw new Error('no session');
+    expect(first.b.aiChoice).toBe('enforced-off');
+    expect(first.b.policy).toMatchObject({ ai: 'off', lockSettings: true });
+    // Locked settings: the student's "record.focus = false" is ignored and the attempt recorded.
+    expect(first.b.settings).toMatchObject({ 'tap.record.focus': true });
+    expect(String(first.b.settings?.['tap.ignored'])).toMatch(/record\.focus=false/);
+    expect(driver.configuration.get('editor.snippetSuggestions')).toBe('none');
+    expect(driver.configuration.get('terminal.integrated.shellIntegration.enabled')).toBe(true);
+    expect(ui.messages.some((m) => /turn off AI features/.test(m.text))).toBe(false);
+  });
+
+  it('warns when the code being edited is outside the recorded folder', async () => {
+    driver.addFolder(ws);
+    await start();
+    ui.answers.push(undefined);
+    await vscode.commands.executeCommand('tap.start');
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'tap-other-'));
+    fs.writeFileSync(path.join(other, 'answer.c'), 'int x;\n');
+    const doc = driver.open(path.join(other, 'answer.c'));
+    fake.window.activeTextEditor = { document: doc };
+    driver.emitters.activeEditor.fire(fake.window.activeTextEditor);
+    const outside = ui.statusItems.find((i) => i.name === 'TAP-CC-ONE: file not recorded')!;
+    expect(outside.visible).toBe(true);
+    expect(ui.messages.at(-1)!.text).toMatch(/"answer\.c" is outside the recorded folder/);
+    fake.window.activeTextEditor = { document: driver.open(path.join(ws, 'main.c')) };
+    driver.emitters.activeEditor.fire(fake.window.activeTextEditor);
+    expect(outside.visible).toBe(false);
+    fs.rmSync(other, { recursive: true, force: true });
+  });
+
+  it('records tabs and terminals open outside the folder, and terminals it cannot monitor', async () => {
+    driver.addFolder(ws);
+    await start();
+    ui.answers.push(undefined);
+    await vscode.commands.executeCommand('tap.start');
+    fake.window.tabGroups.all = [
+      {
+        tabs: [
+          { label: 'Simple Browser', isActive: true, input: new fake.TabInputWebview('simpleBrowser.view') },
+          {
+            label: 'old_lab6.cpp',
+            isActive: false,
+            input: new fake.TabInputText(fake.Uri.file('/x/old_lab6.cpp')),
+          },
+          {
+            label: 'main.c',
+            isActive: false,
+            input: new fake.TabInputText(fake.Uri.file(path.join(ws, 'main.c'))),
+          },
+        ],
+      },
+    ];
+    const terminal = { name: 'bash' };
+    fake.window.terminals = [terminal];
+    driver.emitters.terminalOpen.fire(terminal);
+    driver.emitters.tabs.fire();
+    await until(() =>
+      records().some((r) => r.k === Kind.ENV_CHANGE && r.b.open?.some((o) => o.name === 'Simple Browser')),
+    );
+    const open = records().filter((r) => r.k === Kind.ENV_CHANGE && r.b.open)[0]!;
+    expect(open.k === Kind.ENV_CHANGE && open.b.open?.map((o) => [o.k, o.name, o.vis ?? false])).toEqual([
+      ['file', 'old_lab6.cpp', false],
+      ['terminal', 'bash', false],
+      ['web', 'Simple Browser', true],
+    ]);
+    // After a few seconds without shell integration the terminal counts as unmonitored.
+    await until(
+      () => records().some((r) => r.k === Kind.ENV_CHANGE && r.b.open?.some((o) => o.mon === false)),
+      8000,
+    );
+    const codes = verifyLog(logBytes()).findings.map((f) => f.code);
+    expect(codes).toContain('TERMINAL_NOT_MONITORED');
+    expect(codes).toContain('OPEN_OUTSIDE_FOLDER');
+  }, 15_000);
+
+  it('records TAP setting changes while recording', async () => {
+    driver.addFolder(ws);
+    await start();
+    ui.answers.push(undefined);
+    await vscode.commands.executeCommand('tap.start');
+    await vscode.workspace.getConfiguration('tap').update('record.terminalCommands', false);
+    await until(() =>
+      records().some(
+        (r) => r.k === Kind.ENV_CHANGE && r.b.settings?.['tap.record.terminalCommands'] === false,
+      ),
+    );
+    expect(verifyLog(logBytes()).findings.map((f) => f.code)).toContain('SETTINGS_CHANGED');
+  });
+
+  it('warns before exporting a log with no code edits', async () => {
+    const folder = driver.addFolder(ws);
+    await start();
+    ui.answers.push(undefined);
+    await vscode.commands.executeCommand('tap.start');
+    ui.files.push(path.join(storage, 'empty.zip'));
+    ui.answers.push(undefined); // dismiss the warning: nothing is saved
+    await vscode.commands.executeCommand('tap.export');
+    expect(ui.messages.at(-1)!.text).toMatch(/has no edits to code files/);
+    expect(fs.existsSync(path.join(storage, 'empty.zip'))).toBe(false);
+    void folder;
   });
 });

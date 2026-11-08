@@ -3,7 +3,7 @@
   "displayName": "TAP-CC-ONE: Code Authorship Log",
   "description": "Records a tamper-evident history of how your code was written, so you can prove your work is your own.",
   "icon": "icon.png",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "abdullahforecasts",
   "author": "Abdullah Nawaz",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -115,7 +115,7 @@
       },
       {
         "command": "tap.openLogFile",
-        "title": "Open Log File or Submission\u2026",
+        "title": "Open Log File or Submission…",
         "category": "TAP",
         "icon": "$(file-zip)"
       }
@@ -191,30 +191,33 @@
         "tap.record.focus": {
           "type": "boolean",
           "default": true,
-          "description": "Record when the VS Code window gains or loses focus. Disclosed in the log."
+          "description": "Record when the VS Code window gains or loses focus (time away from the editor). Turning this off is disclosed in the log and shown to the reader."
         },
         "tap.classify.clipboardCheckMinChars": {
           "type": "number",
           "default": 2,
           "minimum": 1,
-          "description": "Insertions at least this long are compared with the clipboard to detect pastes. The clipboard itself is never stored."
+          "description": "Insertions at least this long are compared with the clipboard to detect pastes (1 or 2; larger values are ignored and the attempt is recorded). The clipboard itself is never stored.",
+          "maximum": 2
         },
         "tap.classify.bulkMinChars": {
           "type": "number",
           "default": 40,
           "minimum": 2,
-          "description": "Non-paste insertions at least this long are marked as bulk insertions (completions, snippets, AI suggestions)."
+          "description": "Non-paste insertions at least this long are flagged as bulk insertions (completions, snippets, AI suggestions). At most 40; the verifier also re-checks every insertion itself.",
+          "maximum": 40
         },
         "tap.checkpoint.intervalSec": {
           "type": "number",
           "default": 300,
           "minimum": 60,
-          "description": "How often a signed checkpoint is written while you are working."
+          "description": "How often a signed checkpoint is written while you are working (60 to 600 seconds).",
+          "maximum": 600
         },
         "tap.record.terminalCommands": {
           "type": "boolean",
           "default": true,
-          "description": "Record commands run in VS Code's terminal (the full command line, with passwords and tokens masked) and their exit codes. Needs terminal shell integration. Disclosed in the log."
+          "description": "Record commands run in VS Code's terminal, wherever they run, with their output and exit codes (passwords and tokens masked, output capped at 64 KB per command). Needs terminal shell integration. Turning this off is disclosed in the log."
         },
         "tap.anchoring.enabled": {
           "type": "boolean",
@@ -225,7 +228,8 @@
           "type": "number",
           "default": 600,
           "minimum": 120,
-          "description": "How often the newest checkpoint is timestamped while you work (nothing is sent when nothing changed)."
+          "description": "How often the newest checkpoint is timestamped while you work (nothing is sent when nothing changed).",
+          "maximum": 900
         },
         "tap.anchoring.tsa": {
           "type": "array",
@@ -250,6 +254,11 @@
             "https://finney.calendar.eternitywall.com"
           ],
           "description": "OpenTimestamps calendars (proofs anchored in Bitcoin). One is used per round, in turn."
+        },
+        "tap.checkForUpdates": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check once a day whether a newer TAP-CC-ONE release is available (asks GitHub for the latest release number; nothing about your code is sent)."
         }
       }
     }

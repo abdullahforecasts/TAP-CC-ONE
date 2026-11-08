@@ -5,6 +5,7 @@
 
 import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   createAnchorVerifier,
@@ -16,6 +17,7 @@ import {
 import { nodeHttpClient } from '@tap/anchor/node';
 import {
   type AnchorVerifier,
+  compareVersions,
   type KeyPair,
   keyFingerprint,
   Replayer,
@@ -31,7 +33,13 @@ import {
   DEFAULT_CALENDARS,
   DEFAULT_TSAS,
 } from '../anchoring/anchorService.js';
-import { createConfig, createMatcher, hasConfig } from '../storage/folderConfig.js';
+import {
+  createConfig,
+  createMatcher,
+  DEFAULT_POLICY,
+  hasConfig,
+  loadConfig,
+} from '../storage/folderConfig.js';
 import { loadOrCreateKey } from '../storage/keystore.js';
 import { walkFiles } from '../storage/walk.js';
 import { buildSubmissionZip, readSubmissionZip } from './exportZip.js';
@@ -43,6 +51,24 @@ const NEVER_KEY = 'tap.neverAsk';
 const DISABLED_KEY = 'tap.disabled';
 const PAUSED_KEY = 'tap.paused';
 const KEY_NOTICE_KEY = 'tap.keyFileNoticeShown';
+/** Folder → the student's answer to "turn off AI features while recording?" (G4). */
+const AI_CHOICE_KEY = 'tap.aiChoice';
+const UPDATE_CHECK_KEY = 'tap.lastUpdateCheck';
+const RELEASES_API = 'https://api.github.com/repos/abdullahforecasts/TAP-CC-ONE/releases/latest';
+const RELEASES_PAGE = 'https://github.com/abdullahforecasts/TAP-CC-ONE/releases/latest';
+/** Folders with more tracked files than this get a "too broad?" warning (B7). */
+const BROAD_FOLDER_FILES = 200;
+/** Languages whose files are code (an outside file in one of these gets a warning, B1). */
+const NON_CODE_LANGUAGES = new Set([
+  'plaintext',
+  'log',
+  'markdown',
+  'json',
+  'jsonc',
+  'ignore',
+  'properties',
+  'csv',
+]);
 /** Longest a timestamp request may take, and the largest answer accepted. */
 const HTTP_TIMEOUT_MS = 20_000;
 const HTTP_MAX_BYTES = 1024 * 1024;
@@ -53,6 +79,9 @@ export class Controller implements vscode.Disposable {
   private readonly context: vscode.ExtensionContext;
   private readonly sessions = new Map<string, FolderSession>();
   private readonly status: vscode.StatusBarItem;
+  /** "Not recorded" warning when the active editor is outside every recorded folder (B1). */
+  private readonly outsideStatus: vscode.StatusBarItem;
+  private readonly warnedOutside = new Set<string>();
   readonly log: vscode.LogOutputChannel;
   private key: KeyPair | undefined;
   private readonly version: string;
@@ -67,7 +96,11 @@ export class Controller implements vscode.Disposable {
     this.status = vscode.window.createStatusBarItem('tap.status', vscode.StatusBarAlignment.Left, 100);
     this.status.name = 'TAP-CC-ONE';
     this.status.command = 'tap.showMenu';
-    this.disposables.push(this.log, this.status);
+    this.outsideStatus = vscode.window.createStatusBarItem('tap.outside', vscode.StatusBarAlignment.Left, 99);
+    this.outsideStatus.name = 'TAP-CC-ONE: file not recorded';
+    this.outsideStatus.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    this.outsideStatus.command = 'tap.showMenu';
+    this.disposables.push(this.log, this.status, this.outsideStatus);
     const queueFile = path.join(context.globalStorageUri.fsPath, 'anchor-queue.json');
     this.anchors = new AnchorService({
       http: httpClient,
@@ -118,9 +151,97 @@ export class Controller implements vscode.Disposable {
         this.updateStatus();
       }),
     );
+    this.disposables.push(vscode.window.onDidChangeActiveTextEditor(() => this.checkOutsideEditor()));
     for (const folder of vscode.workspace.workspaceFolders ?? []) await this.openFolder(folder);
     this.anchors.start();
     this.updateStatus();
+    this.checkOutsideEditor();
+    void this.checkForUpdate();
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Warnings that keep recordings complete (0.3.3)
+  // ------------------------------------------------------------------------------------------
+
+  /** Warns when the active editor holds code that no recorded folder contains (B1). */
+  checkOutsideEditor(): void {
+    const recording = [...this.sessions.values()].filter(
+      (s) => s.status === 'recording' || s.status === 'paused',
+    );
+    const doc = vscode.window.activeTextEditor?.document;
+    const outside =
+      recording.length > 0 &&
+      doc !== undefined &&
+      (doc.uri.scheme === 'file' || doc.uri.scheme === 'untitled') &&
+      !NON_CODE_LANGUAGES.has(doc.languageId) &&
+      !recording.some((s) => s.relOf(doc.uri) !== undefined || isInside(s.root, doc.uri));
+    if (!outside || !doc) {
+      this.outsideStatus.hide();
+      return;
+    }
+    const untitled = doc.uri.scheme === 'untitled';
+    const name = untitled ? 'This unsaved editor' : `"${path.basename(doc.uri.fsPath)}"`;
+    const folders = recording.map((s) => `"${s.name}"`).join(', ');
+    this.outsideStatus.text = '$(warning) TAP: not recording this file';
+    this.outsideStatus.tooltip = `${name} is outside the recorded folder ${folders}: what you type here is NOT recorded.`;
+    this.outsideStatus.show();
+    const key = doc.uri.toString();
+    if (this.warnedOutside.has(key)) return;
+    this.warnedOutside.add(key);
+    void vscode.window.showWarningMessage(
+      untitled
+        ? `TAP-CC-ONE: typing in an unsaved editor is NOT recorded. Save the file inside the recorded folder ${folders} first.`
+        : `TAP-CC-ONE: ${name} is outside the recorded folder ${folders}, so what you type in it is NOT recorded. Move it into the recorded folder, or open and record the folder that contains it.`,
+    );
+  }
+
+  /** Asks once a day whether a newer release exists (B2). */
+  private async checkForUpdate(): Promise<void> {
+    if (!vscode.workspace.getConfiguration('tap').get<boolean>('checkForUpdates', true)) return;
+    const last = this.context.globalState.get<number>(UPDATE_CHECK_KEY) ?? 0;
+    if (Date.now() - last < 24 * 3600_000) return;
+    await this.context.globalState.update(UPDATE_CHECK_KEY, Date.now());
+    try {
+      const res = await httpClient(RELEASES_API, {
+        method: 'GET',
+        headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'tap-cc-one-extension' },
+      });
+      if (res.status !== 200) return;
+      const tag = String(
+        (JSON.parse(new TextDecoder().decode(res.body)) as { tag_name?: string }).tag_name ?? '',
+      );
+      const latest = tag.replace(/^v/, '');
+      if (!/^\d+\.\d+\.\d+$/.test(latest) || compareVersions(latest, this.version) <= 0) return;
+      const choice = await vscode.window.showInformationMessage(
+        `TAP-CC-ONE ${latest} is available (you have ${this.version}). Teachers may need logs from the latest version.`,
+        'Open release page',
+      );
+      if (choice) await vscode.env.openExternal(vscode.Uri.parse(RELEASES_PAGE));
+    } catch (e) {
+      this.log.info(`update check skipped: ${String(e)}`);
+    }
+  }
+
+  /** Warns when the folder looks much broader than an assignment (B7). */
+  private async warnIfBroad(folder: vscode.WorkspaceFolder): Promise<void> {
+    const root = folder.uri.fsPath;
+    const home = os.homedir();
+    const name = path.basename(root).toLowerCase();
+    const special =
+      path.resolve(root) === path.resolve(home) ||
+      (path.dirname(path.resolve(root)) === path.resolve(home) &&
+        ['desktop', 'documents', 'downloads', 'onedrive'].includes(name));
+    let count = 0;
+    try {
+      const config = loadConfig(root).config;
+      count = (await walkFiles(root, createMatcher(config), { limit: BROAD_FOLDER_FILES + 1 })).length;
+    } catch {
+      return;
+    }
+    if (!special && count <= BROAD_FOLDER_FILES) return;
+    void vscode.window.showWarningMessage(
+      `TAP-CC-ONE is recording "${folder.name}"${special ? ', a whole personal folder' : ` with more than ${BROAD_FOLDER_FILES} files`}. Record only the assignment's folder: open that folder in VS Code and start recording there.`,
+    );
   }
 
   /** Synchronous shutdown (VS Code is closing or reloading the window). */
@@ -236,7 +357,9 @@ export class Controller implements vscode.Disposable {
     if (!hasConfig(root)) createConfig(root, this.defaultConfig(folder));
     await this.setFolderFlag(DISABLED_KEY, folder, false);
     await this.setFolderFlag(NEVER_KEY, folder, false);
-    return this.startSession(folder);
+    const session = await this.startSession(folder);
+    void this.warnIfBroad(folder);
+    return session;
   }
 
   private async startSession(folder: vscode.WorkspaceFolder): Promise<FolderSession | undefined> {
@@ -249,6 +372,7 @@ export class Controller implements vscode.Disposable {
       key: await this.getKey(),
       mirrorDir: path.join(this.context.globalStorageUri.fsPath, 'logs'),
       sessionId: vscode.env.sessionId,
+      globalStorage: this.context.globalStorageUri.fsPath,
       log: this.log,
       anchors: this.anchors,
       onStatusChange: () => {
@@ -260,7 +384,21 @@ export class Controller implements vscode.Disposable {
       },
     });
     this.sessions.set(id, session);
-    await session.start({ paused: this.hasFolderFlag(PAUSED_KEY, folder) });
+    let policyAi = DEFAULT_POLICY.ai;
+    try {
+      policyAi = loadConfig(folder.uri.fsPath).config.policy?.ai ?? DEFAULT_POLICY.ai;
+    } catch {
+      // start() reports a broken config
+    }
+    const choices = this.context.workspaceState.get<Record<string, string>>(AI_CHOICE_KEY) ?? {};
+    const stored = choices[id] as 'off' | 'on' | undefined;
+    const aiChoice =
+      policyAi === 'off' ? 'enforced-off' : policyAi === 'on' ? 'on' : (stored ?? 'unanswered');
+    await session.start({ paused: this.hasFolderFlag(PAUSED_KEY, folder), aiChoice });
+    if (session.status === 'recording' || session.status === 'paused') {
+      if (aiChoice === 'off') void session.turnAiOff();
+      if (aiChoice === 'unanswered') void this.askAiChoice(folder, session);
+    }
     if (session.logIdHex) {
       const map = this.context.globalState.get<Record<string, string>>('tap.logIds') ?? {};
       if (map[id] !== session.logIdHex)
@@ -275,6 +413,22 @@ export class Controller implements vscode.Disposable {
     }
     this.updateStatus();
     return session;
+  }
+
+  /** Asks whether to turn AI features off while recording, and records the answer (G4). */
+  private async askAiChoice(folder: vscode.WorkspaceFolder, session: FolderSession): Promise<void> {
+    const answer = await vscode.window.showInformationMessage(
+      `TAP-CC-ONE: turn off AI features (inline suggestions and AI chat) for "${folder.name}" while it is recorded? Your answer is written in the log, and the log also records whether AI was actually on or off.`,
+      'Turn off AI',
+      'Keep AI on',
+    );
+    if (!answer) return; // stays "unanswered" in the log
+    const choice = answer === 'Turn off AI' ? 'off' : 'on';
+    const id = folder.uri.toString();
+    const choices = this.context.workspaceState.get<Record<string, string>>(AI_CHOICE_KEY) ?? {};
+    await this.context.workspaceState.update(AI_CHOICE_KEY, { ...choices, [id]: choice });
+    if (choice === 'off') await session.turnAiOff();
+    session.recordAiChoice(choice);
   }
 
   private async rememberPaused(folder: vscode.WorkspaceFolder, paused: boolean): Promise<void> {
@@ -341,6 +495,7 @@ export class Controller implements vscode.Disposable {
       text += ` ⧗${waiting}`;
       lines.push(`${waiting} timestamp(s) waiting to be sent or written (offline?)`);
     }
+    this.checkOutsideEditor();
     this.status.text = text;
     this.status.backgroundColor = background;
     this.status.tooltip = `TAP-CC-ONE authorship recording\n${lines.join('\n')}\n\nClick for options.`;
@@ -599,6 +754,44 @@ export class Controller implements vscode.Disposable {
       void vscode.window.showErrorMessage(`TAP-CC-ONE could not export "${folder.name}": ${String(e)}`);
       return;
     }
+    // B1: a log without code edits usually means the code was written outside the folder.
+    const codeChars = result.report.composition?.nonWs ?? 0;
+    if (result.report.stats.changes === 0 || codeChars === 0) {
+      const go = await vscode.window.showWarningMessage(
+        `TAP-CC-ONE: the log of "${folder.name}" has no edits to code files. Did you write your code in a file outside the recorded folder? Such work is not in the log.`,
+        { modal: true },
+        'Export anyway',
+      );
+      if (go !== 'Export anyway') return;
+    }
+    // B3: timestamps still queued (offline) would leave the end of the work without them.
+    const logId = this.session(folder)?.logIdHex;
+    while (logId && this.anchors.outstanding(logId) > 0) {
+      const left = this.anchors.outstanding(logId);
+      const go = await vscode.window.showWarningMessage(
+        `TAP-CC-ONE: ${left} timestamp request(s) are still waiting to be sent (are you offline?). If you export now, the latest part of your work has no independent timestamp. Connect to the internet and choose "Try again".`,
+        { modal: true },
+        'Try again',
+        'Export anyway',
+      );
+      if (go === 'Export anyway') break;
+      if (go !== 'Try again') return;
+      try {
+        result = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: 'TAP-CC-ONE: sending queued timestamps (up to 30 seconds)…',
+          },
+          async () => {
+            await this.anchors.waitForAll(logId, EXPORT_WAIT_MS);
+            return this.exportFolder(folder);
+          },
+        );
+      } catch (e) {
+        void vscode.window.showErrorMessage(`TAP-CC-ONE could not export "${folder.name}": ${String(e)}`);
+        return;
+      }
+    }
     const target = await vscode.window.showSaveDialog({
       title: 'Save the submission',
       defaultUri: vscode.Uri.file(path.join(path.dirname(folder.uri.fsPath), result.name)),
@@ -617,7 +810,7 @@ export class Controller implements vscode.Disposable {
         ? vscode.window.showWarningMessage
         : vscode.window.showInformationMessage;
     const choice = await show(
-      `TAP-CC-ONE: saved ${path.basename(target.fsPath)}. Log ${verdict}, ${stamped}. Submit this zip.`,
+      `TAP-CC-ONE: saved ${path.basename(target.fsPath)}. Log ${verdict}, ${stamped}. Submit this zip as it is (do not unzip or re-zip it).`,
       'Show in Folder',
     );
     if (choice === 'Show in Folder') await vscode.commands.executeCommand('revealFileInOS', target);
@@ -730,6 +923,13 @@ function anchorConfig(): AnchorConfig {
  * applies the user's proxy settings to these modules.
  */
 const httpClient: HttpClient = nodeHttpClient({ timeoutMs: HTTP_TIMEOUT_MS, maxBytes: HTTP_MAX_BYTES });
+
+/** Whether a URI is a file inside `root` (tracked or not). */
+function isInside(root: string, uri: vscode.Uri): boolean {
+  if (uri.scheme !== 'file') return false;
+  const rel = path.relative(root, uri.fsPath);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
 
 /** For a bare .codelog: the logged files found next to it, to compare with. */
 function filesNextTo(log: Uint8Array, dir: string): SubmittedFile[] {

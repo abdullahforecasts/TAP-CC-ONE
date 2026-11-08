@@ -3,12 +3,36 @@ import * as path from 'node:path';
 import { sha256 } from '@tap/core';
 import picomatch from 'picomatch';
 
+/**
+ * A teacher's rules for a recorded folder (exam mode, 0.3.3), set in .tap/config.json:
+ *   "policy": { "ai": "off", "suggestions": "off", "lockSettings": true, "requireShellIntegration": true }
+ * The config file's hash is in every SESSION_START, so a student who edits it is visible.
+ */
+export interface FolderPolicy {
+  /** off: AI features are turned off without asking; ask (default): the student chooses; on: no question. */
+  ai: 'off' | 'ask' | 'on';
+  /** off: word-based, snippet and tab-completion suggestions are turned off for the folder. */
+  suggestions: 'off' | 'on';
+  /** The recorder ignores the student's TAP settings and uses the defaults. */
+  lockSettings: boolean;
+  /** Terminal shell integration is turned on so commands and output can be recorded. */
+  requireShellIntegration: boolean;
+}
+
+export const DEFAULT_POLICY: FolderPolicy = {
+  ai: 'ask',
+  suggestions: 'on',
+  lockSettings: false,
+  requireShellIntegration: false,
+};
+
 export interface FolderConfig {
   version: 1;
   label: string;
   include: string[];
   exclude: string[];
   maxFileSizeKB: number;
+  policy?: FolderPolicy;
 }
 
 export const TAP_DIR = '.tap';
@@ -58,7 +82,21 @@ export function loadConfig(folder: string): LoadedConfig {
         ? Math.min(raw.maxFileSizeKB, 4096)
         : 1024,
   };
+  const policy = parsePolicy((raw as { policy?: unknown }).policy);
+  if (policy) config.policy = policy;
   return { config, hash: sha256(new Uint8Array(bytes)) };
+}
+
+/** The policy object of a config file, or undefined when there is none. */
+export function parsePolicy(v: unknown): FolderPolicy | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const p = v as Record<string, unknown>;
+  return {
+    ai: p.ai === 'off' || p.ai === 'on' ? p.ai : 'ask',
+    suggestions: p.suggestions === 'off' ? 'off' : 'on',
+    lockSettings: p.lockSettings === true,
+    requireShellIntegration: p.requireShellIntegration === true,
+  };
 }
 
 /** Builds the include/exclude matcher for workspace-relative '/' paths. */

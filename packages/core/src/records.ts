@@ -45,7 +45,40 @@ export interface SessionStartBody {
   liveShare: boolean;
   cfgHash: Uint8Array;
   settings?: { [key: string]: CborValue };
+  /** The student's answer to "turn off AI features while recording?" (0.3.3). */
+  aiChoice?: AiChoice;
+  ai?: AiState;
+  /** Editor features that can insert code: suggestion settings, user snippets, keybindings. */
+  editor?: { [key: string]: CborValue };
+  /** Teacher policy from .tap/config.json. */
+  policy?: { [key: string]: CborValue };
 }
+
+/** Whether AI assistance could insert or show code (design §6.1, 0.3.3). */
+export interface AiState {
+  /** AI suggestions or chat could be used at this moment. */
+  on: boolean;
+  /** editor.inlineSuggest.enabled */
+  inline: boolean;
+  /** AI features (chat, inline AI) not turned off by chat.disableAIFeatures. */
+  chat: boolean;
+  /** AI-assist extensions that are active right now. */
+  active: string[];
+}
+
+export type AiChoice = 'off' | 'on' | 'unanswered' | 'enforced-off';
+
+/** Something open in the window that is not a file of the recorded folder (0.3.3). */
+export interface OpenItem {
+  k: 'file' | 'untitled' | 'web' | 'notebook' | 'terminal' | 'other';
+  /** File base name, tab label or terminal name (never a full path). */
+  name: string;
+  /** Shown in an editor group right now. */
+  vis?: boolean;
+  /** Terminals: whether its commands can be recorded (shell integration). */
+  mon?: boolean;
+}
+
 export interface SessionEndBody {
   sid: Uint8Array;
   reason: 'close' | 'reload' | 'deactivate';
@@ -86,10 +119,16 @@ export interface RunStartBody {
   name?: string;
   cmd?: string;
   cwd?: string;
+  /** Terminal command run outside the recorded folder (cwd not recorded). */
+  outside?: boolean;
 }
 export interface RunEndBody {
   rid: number;
   exit?: number;
+  /** Terminal output (control sequences removed, secrets masked, at most 64 Ki characters). */
+  out?: string;
+  /** Total output length in characters (larger than out.length when truncated). */
+  outLen?: number;
 }
 export interface FocusBody {
   on: boolean;
@@ -134,6 +173,11 @@ export interface EnvChangeBody {
   liveShare?: boolean;
   cfgHash?: Uint8Array;
   settings?: { [key: string]: CborValue };
+  aiChoice?: AiChoice;
+  ai?: AiState;
+  editor?: { [key: string]: CborValue };
+  /** Everything open that is not part of the recorded folder (full list, replaces the last). */
+  open?: OpenItem[];
 }
 
 export interface BodyByKind {
@@ -228,6 +272,24 @@ const arrayOf =
     return undefined;
   };
 const map: Check = (v) => (isObj(v) ? undefined : 'expected map');
+const aiChoice = oneOf('off', 'on', 'unanswered', 'enforced-off');
+const aiState: Check = (v, p) => {
+  if (!isObj(v)) return 'expected map';
+  for (const k of ['on', 'inline', 'chat'] as const) {
+    if (bool(v[k], p)) return `${k}: expected boolean`;
+  }
+  return arrayOf(tstr({ max: 200 }))(v.active, `${p}.active`);
+};
+const openItem: Check = (v, p) => {
+  if (!isObj(v)) return 'expected map';
+  const kind = oneOf('file', 'untitled', 'web', 'notebook', 'terminal', 'other')(v.k, p);
+  if (kind) return `k: ${kind}`;
+  const name = tstr({ max: 300 })(v.name, p);
+  if (name) return `name: ${name}`;
+  if (v.vis !== undefined && bool(v.vis, p)) return 'vis: expected boolean';
+  if (v.mon !== undefined && bool(v.mon, p)) return 'mon: expected boolean';
+  return undefined;
+};
 
 const changeTuple: Check = (v) => {
   if (!Array.isArray(v) || (v.length !== 4 && v.length !== 5))
@@ -281,6 +343,10 @@ const BODY_SPECS: Record<KindName, Spec> = {
     liveShare: req(bool),
     cfgHash: req(bstr(32)),
     settings: opt(map),
+    aiChoice: opt(aiChoice),
+    ai: opt(aiState),
+    editor: opt(map),
+    policy: opt(map),
   },
   SESSION_END: { sid: req(bstr(16)), reason: req(oneOf('close', 'reload', 'deactivate')) },
   FILE_SNAPSHOT: {
@@ -308,8 +374,9 @@ const BODY_SPECS: Record<KindName, Spec> = {
     name: opt(tstr({ max: 500 })),
     cmd: opt(tstr({ max: 8000 })),
     cwd: opt(relPath),
+    outside: opt(bool),
   },
-  RUN_END: { rid: req(uint), exit: opt(int) },
+  RUN_END: { rid: req(uint), exit: opt(int), out: opt(tstr({ max: 65_536 })), outLen: opt(uint) },
   FOCUS: { on: req(bool) },
   PAUSE: { why: opt(tstr({ max: 2000 })) },
   RESUME: {},
@@ -340,6 +407,10 @@ const BODY_SPECS: Record<KindName, Spec> = {
     liveShare: opt(bool),
     cfgHash: opt(bstr(32)),
     settings: opt(map),
+    aiChoice: opt(aiChoice),
+    ai: opt(aiState),
+    editor: opt(map),
+    open: opt(arrayOf(openItem)),
   },
 };
 

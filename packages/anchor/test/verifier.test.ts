@@ -131,6 +131,17 @@ describe('anchor verification in verifyLog', () => {
     expect(r.anchoring!.existedBy.map((e) => e.time)).toEqual([second, second]);
   });
 
+  it('a clock set behind real time is reported (every token much later than its record)', () => {
+    const { bytes } = build((ck) => [
+      ['rfc3161', tsa.token({ digest: ck.hash, genTime: ck.t + 3 * 3_600_000 })],
+    ]);
+    const r = verifyLog(bytes, { anchorVerifier: verifier() });
+    expect(codes(r)).toContain('warn:CLOCK_BEHIND');
+    expect(r.findings.find((f) => f.code === 'CLOCK_BEHIND')!.message).toMatch(
+      /at least 1(79|80) min behind/,
+    );
+  });
+
   it('a clock set ahead of the timestamp is caught', () => {
     const { bytes } = build((ck) => [['rfc3161', tsa.token({ digest: ck.hash, genTime: ck.t })]], {
       clockAhead: 600_000,

@@ -7,11 +7,17 @@ import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { type KeyPair, toHex, toLogPath } from '@tap/core';
+import { type AiChoice, type AiState, type KeyPair, type OpenItem, toHex, toLogPath } from '@tap/core';
 import * as vscode from 'vscode';
 import type { AnchorService, AnchorSink } from '../anchoring/anchorService.js';
 import type { EditReason } from '../recorder/classify.js';
-import { detectAiExtensions, LIVE_SHARE_ID, normaliseAppName } from '../recorder/environment.js';
+import {
+  AI_OFF_SETTINGS,
+  detectAiExtensions,
+  LIVE_SHARE_ID,
+  normaliseAppName,
+  SUGGESTIONS_OFF_SETTINGS,
+} from '../recorder/environment.js';
 import {
   type CheckpointInfo,
   type DiskRead,
@@ -20,12 +26,21 @@ import {
   type RecorderOptions,
   type RecorderState,
 } from '../recorder/recorder.js';
-import { maskCommand, programName } from '../recorder/terminal.js';
+import { cleanTerminalOutput, maskCommand, programName } from '../recorder/terminal.js';
 import { readTrackedFile } from '../storage/diskReader.js';
-import { createMatcher, type LoadedConfig, loadConfig, TAP_DIR } from '../storage/folderConfig.js';
+import {
+  createMatcher,
+  DEFAULT_POLICY,
+  type FolderPolicy,
+  type LoadedConfig,
+  loadConfig,
+  TAP_DIR,
+} from '../storage/folderConfig.js';
 import { FolderLock, LOCK_HEARTBEAT_MS } from '../storage/lock.js';
 import { type OpenedLog, openLog } from '../storage/logStore.js';
 import { walkFiles } from '../storage/walk.js';
+import { currentAiState, editorSettings, userCustomizations } from './editorEnv.js';
+import { currentOpenItems } from './openItems.js';
 
 export type SessionStatus = RecorderState | 'read-only' | 'error';
 
@@ -34,6 +49,8 @@ export interface SessionContext {
   key: KeyPair;
   mirrorDir: string;
   sessionId: string;
+  /** The extension's global storage folder (to find the user's snippets and keybindings). */
+  globalStorage?: string;
   log: vscode.LogOutputChannel;
   onStatusChange: () => void;
   /** Shared timestamp queue (absent in some tests). */
@@ -42,6 +59,22 @@ export interface SessionContext {
 
 const TICK_MS = 15_000;
 const VCS_WINDOW_MS = 5_000;
+/** Raw terminal output read per command before cleaning (the stored output is capped at 64 Ki). */
+const MAX_RAW_OUTPUT = 512 * 1024;
+/** How long a new terminal may take to report shell integration before it counts as unmonitored. */
+const SHELL_INTEGRATION_WAIT_MS = 5_000;
+/** Debounce for the list of things open outside the folder. */
+const OPEN_DEBOUNCE_MS = 1_000;
+
+/** The TAP settings a session records, as the user set them. */
+const TAP_SETTING_KEYS: ReadonlyArray<[key: string, fallback: boolean | number]> = [
+  ['record.focus', true],
+  ['classify.clipboardCheckMinChars', 2],
+  ['classify.bulkMinChars', 40],
+  ['checkpoint.intervalSec', 300],
+  ['anchoring.enabled', true],
+  ['record.terminalCommands', true],
+];
 
 /** Diagnostics on the console when TAP_DEBUG is set (the integration tests set it). */
 function debug(...args: unknown[]): void {
@@ -67,6 +100,15 @@ export class FolderSession implements vscode.Disposable {
   private anchorSink: AnchorSink | undefined;
   /** Newest checkpoint already sent for timestamping. */
   private lastAnchoredCk = -1;
+  private policy: FolderPolicy = DEFAULT_POLICY;
+  private lastAi = '';
+  private lastOpen = '[]';
+  private lastEditor = '';
+  private lastSettings = '';
+  private openTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Shell integration per terminal: true once reported, false after the wait without it. */
+  private readonly shellIntegration = new Map<vscode.Terminal, boolean>();
+  private readonly outputs = new Map<unknown, { chunks: string[]; size: number; done: Promise<void> }>();
 
   constructor(folder: vscode.WorkspaceFolder, ctx: SessionContext) {
     this.folder = folder;
@@ -105,11 +147,13 @@ export class FolderSession implements vscode.Disposable {
   }
 
   /** Opens (or creates) the log and starts recording. */
-  async start(options: { paused: boolean }): Promise<void> {
+  async start(options: { paused: boolean; aiChoice?: AiChoice }): Promise<void> {
     if (this.recorder) return;
     try {
       this.config = loadConfig(this.root);
       this.matcher = createMatcher(this.config.config);
+      this.policy = this.config.config.policy ?? DEFAULT_POLICY;
+      await this.applyPolicy();
 
       this.lock = new FolderLock(path.join(this.tapDir, 'lock'), this.ctx.sessionId);
       const lockResult = this.lock.acquire();
@@ -133,17 +177,21 @@ export class FolderSession implements vscode.Disposable {
         );
       }
 
-      const settings = vscode.workspace.getConfiguration('tap', this.folder.uri);
+      const tap = this.tapSettings();
       const recorderSettings = {
-        recordFocus: settings.get<boolean>('record.focus', true),
-        clipboardCheckMinChars: settings.get<number>('classify.clipboardCheckMinChars', 2),
-        bulkMinChars: settings.get<number>('classify.bulkMinChars', 40),
-        checkpointIntervalMs: Math.max(60, settings.get<number>('checkpoint.intervalSec', 300)) * 1000,
+        recordFocus: tap['tap.record.focus'] !== false,
+        clipboardCheckMinChars: Number(tap['tap.classify.clipboardCheckMinChars']),
+        bulkMinChars: Number(tap['tap.classify.bulkMinChars']),
+        checkpointIntervalMs: Number(tap['tap.checkpoint.intervalSec']) * 1000,
       };
-      const anchoring = settings.get<boolean>('anchoring.enabled', true);
-      const terminal = settings.get<boolean>('record.terminalCommands', true);
       const env = this.environment();
       this.lastEnv = JSON.stringify([env.aiExt, env.liveShare]);
+      const ai = currentAiState(this.folder.uri);
+      this.lastAi = JSON.stringify(ai);
+      const editor = this.editorEnvironment();
+      this.lastEditor = JSON.stringify(editor);
+      this.lastSettings = JSON.stringify(tap);
+      const policy = this.config.config.policy;
       const options2: RecorderOptions = {
         writer: this.opened.writer,
         sink: this.opened.store,
@@ -152,14 +200,20 @@ export class FolderSession implements vscode.Disposable {
         env: {
           ...env,
           cfgHash: this.config.hash,
-          settings: {
-            'tap.record.focus': recorderSettings.recordFocus,
-            'tap.classify.clipboardCheckMinChars': recorderSettings.clipboardCheckMinChars,
-            'tap.classify.bulkMinChars': recorderSettings.bulkMinChars,
-            'tap.checkpoint.intervalSec': recorderSettings.checkpointIntervalMs / 1000,
-            'tap.anchoring.enabled': anchoring,
-            'tap.record.terminalCommands': terminal,
-          },
+          settings: tap,
+          ai,
+          editor,
+          ...(options.aiChoice ? { aiChoice: options.aiChoice } : {}),
+          ...(policy
+            ? {
+                policy: {
+                  ai: policy.ai,
+                  suggestions: policy.suggestions,
+                  lockSettings: policy.lockSettings,
+                  requireShellIntegration: policy.requireShellIntegration,
+                },
+              }
+            : {}),
         },
         settings: recorderSettings,
         diskHashes: this.opened.info.diskHashes,
@@ -172,9 +226,16 @@ export class FolderSession implements vscode.Disposable {
       this.recorder.onStateChange = (state) => this.setStatus(state);
       this.subscribe();
       await this.recorder.start();
-      this.timers.push(setInterval(() => void this.recorder?.tick(), TICK_MS));
+      this.timers.push(
+        setInterval(() => {
+          this.checkAi();
+          void this.recorder?.tick();
+        }, TICK_MS),
+      );
       this.timers.push(setInterval(() => this.heartbeat(), LOCK_HEARTBEAT_MS));
-      this.startAnchoring(settings);
+      for (const t of vscode.window.terminals) this.watchShellIntegration(t);
+      this.scheduleOpenItems(0);
+      this.startAnchoring();
       this.ctx.log.info(`${this.name}: recording to ${this.logPath}`);
     } catch (e) {
       this.fail(e);
@@ -227,6 +288,8 @@ export class FolderSession implements vscode.Disposable {
     this.anchorSink = undefined;
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
+    if (this.openTimer) clearTimeout(this.openTimer);
+    this.openTimer = undefined;
     for (const d of this.disposables) d.dispose();
     this.disposables = [];
     this.opened?.store.close();
@@ -268,7 +331,7 @@ export class FolderSession implements vscode.Disposable {
   // Timestamp anchoring (design §9.4)
   // ------------------------------------------------------------------------------------------
 
-  private startAnchoring(settings: vscode.WorkspaceConfiguration): void {
+  private startAnchoring(): void {
     const anchors = this.ctx.anchors;
     const logId = this.logIdHex;
     if (!anchors || !logId || !this.recorder) return;
@@ -277,8 +340,8 @@ export class FolderSession implements vscode.Disposable {
     anchors.register(logId, this.anchorSink);
     anchors.upgradeNow(logId);
     this.lastAnchoredCk = this.opened?.info.lastAnchoredCk ?? -1;
-    if (!settings.get<boolean>('anchoring.enabled', true)) return;
-    const every = Math.max(120, settings.get<number>('anchoring.intervalSec', 600)) * 1000;
+    const settings = vscode.workspace.getConfiguration('tap', this.folder.uri);
+    const every = Math.min(900, Math.max(120, settings.get<number>('anchoring.intervalSec', 600))) * 1000;
     this.timers.push(setInterval(() => void this.anchorLatest(), every));
   }
 
@@ -291,8 +354,7 @@ export class FolderSession implements vscode.Disposable {
     const anchors = this.ctx.anchors;
     const logId = this.logIdHex;
     if (!recorder || !anchors || !logId) return undefined;
-    const settings = vscode.workspace.getConfiguration('tap', this.folder.uri);
-    if (!settings.get<boolean>('anchoring.enabled', true)) return undefined;
+    if (this.tapSettings()['tap.anchoring.enabled'] === false) return undefined;
     const ck = await recorder.checkpointNow(options.force === true);
     if (!ck) return undefined;
     if (ck.s > this.lastAnchoredCk || options.force) {
@@ -310,6 +372,157 @@ export class FolderSession implements vscode.Disposable {
     const written = await this.ctx.anchors.waitFor(this.logIdHex, ck.s, ms);
     await this.flush({ sweep: false });
     return { ck, written };
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Settings, policy, AI state and what is open outside the folder (0.3.3)
+  // ------------------------------------------------------------------------------------------
+
+  /**
+   * The TAP settings in effect: the user's values, or the defaults when the teacher's policy locks
+   * them. Values the recorder ignores (H2) are listed under "tap.ignored".
+   */
+  tapSettings(): Record<string, boolean | number | string> {
+    const c = vscode.workspace.getConfiguration('tap', this.folder.uri);
+    const out: Record<string, boolean | number | string> = {};
+    const ignored: string[] = [];
+    for (const [key, fallback] of TAP_SETTING_KEYS) {
+      const raw = c.get<boolean | number>(key, fallback);
+      let value = this.policy.lockSettings ? fallback : raw;
+      if (key === 'classify.clipboardCheckMinChars') value = Math.min(2, Math.max(1, Number(value) || 2));
+      if (key === 'classify.bulkMinChars') value = Math.min(40, Math.max(2, Number(value) || 40));
+      if (key === 'checkpoint.intervalSec') value = Math.min(600, Math.max(60, Number(value) || 300));
+      if (value !== raw) ignored.push(`${key}=${String(raw)}`);
+      out[`tap.${key}`] = value;
+    }
+    if (ignored.length > 0) out['tap.ignored'] = ignored.join(', ').slice(0, 500);
+    return out;
+  }
+
+  private editorEnvironment(): Record<string, boolean | number | string> {
+    const env: Record<string, boolean | number | string> = { ...editorSettings(this.folder.uri) };
+    if (this.ctx.globalStorage) Object.assign(env, userCustomizations(this.ctx.globalStorage, this.root));
+    return env;
+  }
+
+  /** Applies the teacher's policy to the folder's settings before recording starts (F3, G2, H5). */
+  private async applyPolicy(): Promise<void> {
+    const changes: Array<[string, string, unknown]> = [];
+    if (this.policy.ai === 'off') changes.push(...AI_OFF_SETTINGS);
+    if (this.policy.suggestions === 'off') changes.push(...SUGGESTIONS_OFF_SETTINGS);
+    if (this.policy.requireShellIntegration) {
+      changes.push(['terminal.integrated', 'shellIntegration.enabled', true]);
+    }
+    await this.writeFolderSettings(changes);
+  }
+
+  /** Writes settings for this folder only (its .vscode/settings.json). */
+  async writeFolderSettings(changes: ReadonlyArray<readonly [string, string, unknown]>): Promise<void> {
+    for (const [section, key, value] of changes) {
+      try {
+        const c = vscode.workspace.getConfiguration(section, this.folder.uri);
+        if (JSON.stringify(c.get(key)) === JSON.stringify(value)) continue;
+        await c.update(key, value, vscode.ConfigurationTarget.WorkspaceFolder);
+      } catch (e) {
+        this.ctx.log.warn(`${this.name}: could not set ${section}.${key}: ${String(e)}`);
+      }
+    }
+  }
+
+  /** Turns AI features off for this folder (the student's choice or the policy). */
+  async turnAiOff(): Promise<void> {
+    await this.writeFolderSettings(AI_OFF_SETTINGS);
+    this.checkAi();
+  }
+
+  /** Records the student's answer to "turn off AI features while recording?" (G4). */
+  recordAiChoice(choice: AiChoice): void {
+    this.recorder?.environmentChanged({ aiChoice: choice });
+  }
+
+  /** Records the AI state when it differs from the last one recorded (G1, G3). */
+  checkAi(): void {
+    if (!this.recorder) return;
+    const ai: AiState = currentAiState(this.folder.uri);
+    const key = JSON.stringify(ai);
+    if (key === this.lastAi) return;
+    this.lastAi = key;
+    this.recorder.environmentChanged({ ai });
+  }
+
+  /** Records TAP and editor setting changes (H1, F2). */
+  private onConfigurationChanged(e: vscode.ConfigurationChangeEvent): void {
+    const r = this.recorder;
+    if (!r) return;
+    const uri = this.folder.uri;
+    if (e.affectsConfiguration('tap', uri)) {
+      const tap = this.tapSettings();
+      const key = JSON.stringify(tap);
+      if (key !== this.lastSettings) {
+        this.lastSettings = key;
+        r.environmentChanged({ settings: tap });
+      }
+    }
+    if (
+      ['editor', 'terminal.integrated', 'chat', 'github.copilot'].some((section) =>
+        e.affectsConfiguration(section, uri),
+      )
+    ) {
+      const editor = this.editorEnvironment();
+      const key = JSON.stringify(editor);
+      if (key !== this.lastEditor) {
+        this.lastEditor = key;
+        r.environmentChanged({ editor });
+      }
+      this.checkAi();
+    }
+  }
+
+  /** A terminal counts as unmonitored when it has no shell integration after a few seconds (D6). */
+  private watchShellIntegration(terminal: vscode.Terminal): void {
+    if (this.shellIntegration.has(terminal)) return;
+    const t = terminal as vscode.Terminal & { shellIntegration?: unknown };
+    if (t.shellIntegration) {
+      this.shellIntegration.set(terminal, true);
+      return;
+    }
+    setTimeout(() => {
+      if (!this.recorder || this.shellIntegration.get(terminal) === true) return;
+      if (vscode.window.terminals.includes(terminal)) {
+        this.shellIntegration.set(terminal, Boolean(t.shellIntegration));
+        this.scheduleOpenItems();
+      }
+    }, SHELL_INTEGRATION_WAIT_MS);
+  }
+
+  /** Records the list of things open outside the folder when it changes (F1, D5-D8). */
+  private scheduleOpenItems(delay = OPEN_DEBOUNCE_MS): void {
+    if (this.openTimer) clearTimeout(this.openTimer);
+    this.openTimer = setTimeout(() => {
+      this.openTimer = undefined;
+      if (!this.recorder) return;
+      let items: OpenItem[];
+      try {
+        items = currentOpenItems(
+          (uri) => this.relOf(uri) !== undefined || this.isTapFile(uri),
+          (terminal) => this.shellIntegration.get(terminal),
+        );
+      } catch (e) {
+        this.ctx.log.warn(`${this.name}: could not list open tabs: ${String(e)}`);
+        return;
+      }
+      const key = JSON.stringify(items);
+      if (key === this.lastOpen) return;
+      this.lastOpen = key;
+      this.recorder.environmentChanged({ open: items });
+    }, delay);
+  }
+
+  /** Files inside this folder that are not tracked (.tap/, excluded files) are not "outside". */
+  private isTapFile(uri: vscode.Uri): boolean {
+    if (uri.scheme !== 'file') return false;
+    const rel = path.relative(this.root, uri.fsPath);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
   }
 
   /** Editor and environment details disclosed in SESSION_START (design §6.1). */
@@ -376,38 +589,100 @@ export class FolderSession implements vscode.Disposable {
     };
   }
 
-  /** Commands run in VS Code's terminal (needs shell integration; design §6.1). */
+  /**
+   * Commands run in VS Code's terminal and their output (needs shell integration; design §6.1).
+   * Commands outside the folder are recorded too, marked "outside" (D3, D4); another workspace
+   * folder's own commands are left to that folder's log.
+   */
   private terminalSubscriptions(): vscode.Disposable[] {
     const w = vscode.window as Partial<typeof vscode.window>;
-    if (!w.onDidStartTerminalShellExecution || !w.onDidEndTerminalShellExecution) return [];
-    const settings = () => vscode.workspace.getConfiguration('tap', this.folder.uri);
-    return [
+    const subs: vscode.Disposable[] = [];
+    if (w.onDidOpenTerminal) {
+      subs.push(
+        w.onDidOpenTerminal((t) => {
+          this.watchShellIntegration(t);
+          this.scheduleOpenItems();
+        }),
+      );
+    }
+    if (w.onDidCloseTerminal) subs.push(w.onDidCloseTerminal(() => this.scheduleOpenItems()));
+    if (w.onDidChangeActiveTerminal) subs.push(w.onDidChangeActiveTerminal(() => this.scheduleOpenItems()));
+    if (w.onDidChangeTerminalShellIntegration) {
+      subs.push(
+        w.onDidChangeTerminalShellIntegration((e) => {
+          if (this.shellIntegration.get(e.terminal) !== true) {
+            this.shellIntegration.set(e.terminal, true);
+            this.scheduleOpenItems();
+          }
+        }),
+      );
+    }
+    if (!w.onDidStartTerminalShellExecution || !w.onDidEndTerminalShellExecution) return subs;
+    subs.push(
       w.onDidStartTerminalShellExecution((e) => {
-        if (!settings().get<boolean>('record.terminalCommands', true)) return;
+        if (this.tapSettings()['tap.record.terminalCommands'] === false) return;
+        if (this.shellIntegration.get(e.terminal) !== true) {
+          this.shellIntegration.set(e.terminal, true);
+          this.scheduleOpenItems();
+        }
         const cwdUri = e.execution.cwd;
         let cwd: string | undefined;
-        if (cwdUri) {
-          if (cwdUri.scheme !== 'file') return;
+        let outside = false;
+        if (cwdUri && cwdUri.scheme === 'file') {
           const rel = path.relative(this.root, cwdUri.fsPath);
-          if (rel.startsWith('..') || path.isAbsolute(rel)) return; // another folder's terminal
-          cwd = rel === '' ? undefined : toLogPath(rel);
-        } else if ((vscode.workspace.workspaceFolders ?? []).length > 1) {
-          return; // cannot tell which folder the command belongs to
+          if (rel.startsWith('..') || path.isAbsolute(rel)) {
+            const other = vscode.workspace.getWorkspaceFolder(cwdUri);
+            if (other && other.uri.toString() !== this.folder.uri.toString()) return; // that folder's log
+            outside = true;
+          } else if (rel !== '') {
+            cwd = toLogPath(rel);
+          }
+        } else if (cwdUri || (vscode.workspace.workspaceFolders ?? []).length > 1) {
+          outside = true; // remote or unknown working folder
         }
         const line = e.execution.commandLine.value;
         if (!line.trim()) return;
-        const details: { cmd: string; cwd?: string } = { cmd: maskCommand(line) };
+        const details: { cmd: string; cwd?: string; outside?: boolean } = { cmd: maskCommand(line) };
         if (cwd !== undefined) details.cwd = cwd;
+        if (outside) details.outside = true;
         const rid = this.recorder?.runStarted('terminal', programName(line), details);
-        if (rid !== undefined) this.runs.set(e.execution, rid);
+        if (rid === undefined) return;
+        this.runs.set(e.execution, rid);
+        // Output is read from the start of the command (D1); cleaned and capped when it ends.
+        const capture = { chunks: [] as string[], size: 0, done: Promise.resolve() };
+        capture.done = (async () => {
+          try {
+            for await (const data of e.execution.read()) {
+              if (capture.size < MAX_RAW_OUTPUT) {
+                capture.chunks.push(data);
+                capture.size += data.length;
+              }
+            }
+          } catch (err) {
+            debug('terminal output', err);
+          }
+        })();
+        this.outputs.set(e.execution, capture);
       }),
       w.onDidEndTerminalShellExecution((e) => {
         const rid = this.runs.get(e.execution);
         if (rid === undefined) return;
         this.runs.delete(e.execution);
-        this.recorder?.runEnded(rid, e.exitCode);
+        const capture = this.outputs.get(e.execution);
+        this.outputs.delete(e.execution);
+        const finish = () => {
+          const output = capture ? cleanTerminalOutput(capture.chunks.join('')) : undefined;
+          this.recorder?.runEnded(rid, e.exitCode, output);
+        };
+        if (!capture) {
+          finish();
+          return;
+        }
+        // The output stream ends just after the command; wait briefly for its last chunk.
+        void Promise.race([capture.done, new Promise((r) => setTimeout(r, 500))]).then(finish);
       }),
-    ];
+    );
+    return subs;
   }
 
   private vcsRecentlyActive(): boolean {
@@ -515,12 +790,16 @@ export class FolderSession implements vscode.Disposable {
       }),
       ...this.terminalSubscriptions(),
       vscode.extensions.onDidChange(() => {
+        this.checkAi();
         const env = this.environment();
         const key = JSON.stringify([env.aiExt, env.liveShare]);
         if (key === this.lastEnv) return;
         this.lastEnv = key;
         r()?.environmentChanged({ aiExt: env.aiExt, liveShare: env.liveShare });
       }),
+      vscode.workspace.onDidChangeConfiguration((e) => this.onConfigurationChanged(e)),
+      vscode.window.tabGroups.onDidChangeTabs(() => this.scheduleOpenItems()),
+      vscode.window.tabGroups.onDidChangeTabGroups(() => this.scheduleOpenItems()),
     );
     const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.folder, '**/*'));
     const onDisk = (uri: vscode.Uri) => {

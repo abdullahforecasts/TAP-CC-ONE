@@ -44,6 +44,9 @@ export function About({ data }: { data: ViewData }) {
 
       <Timestamps data={data} />
 
+      <h3>AI features</h3>
+      <AiSummary data={data} />
+
       <h3>Settings that weaken the evidence</h3>
       {model.weakenings.length === 0 ? (
         <p>None: the recorder used its default settings.</p>
@@ -151,5 +154,43 @@ function Timestamps({ data }: { data: ViewData }) {
         </tbody>
       </table>
     </>
+  );
+}
+
+const CHOICE_TEXT: Record<string, string> = {
+  off: 'turned off by the student when recording started',
+  on: 'kept on by the student',
+  unanswered: 'the student did not answer the question',
+  'enforced-off': 'turned off by the course policy',
+};
+
+/** The declared AI choice, the course policy and how long AI was actually available. */
+function AiSummary({ data }: { data: ViewData }) {
+  const { model } = data;
+  const last = model.sessions.at(-1);
+  const choice = [...model.sessions].reverse().find((s) => s.aiChoice)?.aiChoice;
+  const ranges = model.timeline.aiOn ?? [];
+  const onMs = ranges.reduce((n, r) => n + (r.to - r.from), 0);
+  if (!choice && ranges.length === 0) {
+    return <p class="muted">Not recorded (logs from TAP-CC-ONE 0.3.3 and later record it).</p>;
+  }
+  return (
+    <ul>
+      {choice && <li>Declared: {CHOICE_TEXT[choice] ?? choice}</li>}
+      <li>
+        Actually available: {onMs > 0 ? `${fmtDuration(onMs)} in ${ranges.length} period(s)` : 'never'}
+        {(choice === 'off' || choice === 'enforced-off') && onMs > 0 && (
+          <strong> although it was declared off</strong>
+        )}
+      </li>
+      {last?.policy && (
+        <li>
+          Course policy:{' '}
+          {Object.entries(last.policy)
+            .map(([k, v]) => `${k} = ${String(v)}`)
+            .join(', ')}
+        </li>
+      )}
+    </ul>
   );
 }

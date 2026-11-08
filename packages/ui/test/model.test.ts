@@ -452,14 +452,23 @@ describe('undo and redo in the replay', () => {
       T(),
     );
     w.append('FILE_OP', { op: 'create', f: 0, path: 'a.c', origin: 'editor' }, T());
-    w.append('EDIT_BATCH', { f: 0, c: [[100, 0, 0, 'int a;\n']] }, T()); // typed
+    const typed = (off: number, text: string): Array<[number, number, number, string]> =>
+      [...text].map((ch, i) => [100, off + i, 0, ch]);
+    w.append('EDIT_BATCH', { f: 0, c: typed(0, 'int a;\n') }, T()); // typed
     w.append('EDIT_BATCH', { f: 0, c: [[100, 7, 0, 'int b = f();\n', Flag.BULK]] }, T()); // tool insert
     w.append('EDIT_BATCH', { f: 0, c: [[100, 7, 13, '']] }, T()); // deleted
     w.append('EDIT_BATCH', { f: 0, c: [[100, 7, 0, 'int b = f();\n', Flag.UNDO]] }, T()); // undo
-    w.append('EDIT_BATCH', { f: 0, c: [[100, 0, 0, '// x\n']] }, T()); // typed again
+    w.append('EDIT_BATCH', { f: 0, c: typed(0, '// x\n') }, T()); // typed again
     const model = load(w.drain());
     const track = model.tracks.find((tr) => tr.f === 0)!;
-    expect(track.events.map((e) => e.undo ?? false)).toEqual([false, false, false, true, false]);
+    // 7 typed characters, the tool insert, the delete, the undo, then 5 typed characters.
+    expect(track.events.map((e) => e.undo ?? false)).toEqual([
+      ...Array(7).fill(false),
+      false,
+      false,
+      true,
+      ...Array(5).fill(false),
+    ]);
 
     const frame = frameAt(track, track.events.length);
     expect(frame.text).toBe('// x\nint a;\nint b = f();\n');
@@ -474,7 +483,7 @@ describe('undo and redo in the replay', () => {
       ['undo-redo', 13],
     ]);
     // Keyframes and stepping forward agree.
-    expect(frameAt(track, 4).undo.map((s) => [s.origin, s.len])).toEqual([
+    expect(frameAt(track, 10).undo.map((s) => [s.origin, s.len])).toEqual([
       ['typed', 7],
       ['undo-redo', 13],
     ]);

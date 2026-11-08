@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.3 (fixes from the first classroom test)
+
+**AI assistance**
+
+- When recording starts, the student is asked whether to turn off AI features (inline suggestions and AI chat) for the folder. The answer is written in the log, and so is whether AI was actually on or off afterwards (checked every 15 seconds and on every settings or extension change). The viewer shows an "AI available" lane on the timeline and warns when AI was on after the student said it was off.
+- Text inserted by the editor in one go is classified from the text itself, whatever the settings say: 3 or more non-whitespace characters at once is a **completion** (an accepted suggestion, snippet or auto-complete), 40 or more characters (20 or more over several lines) is **bulk**. Raising `tap.classify.bulkMinChars` no longer hides inserted code.
+- The log lists snippet files, the number of snippets and keybindings that type text, and the suggestion settings (counts only, never the snippets).
+
+**Terminal**
+
+- Terminal output is recorded with each command (escape sequences removed, passwords and tokens masked, at most 64 000 characters per command). Commands run outside the recorded folder are recorded too, marked "outside the folder".
+- The verifier reports code printed in the terminal that later appears in your files (TERMINAL_CODE_REUSED), and names the terminal command that ran just before a change made outside the editor.
+- Terminals without shell integration (whose commands cannot be recorded) are listed in the log.
+
+**Outside the folder**
+
+- Files from other folders, unsaved editors, web pages inside VS Code, notebooks and terminals that are open while recording are listed in the log (names only). The status bar shows "file not recorded" and a warning appears when you edit a code file outside the recorded folder.
+- Time away from the editor is summarised.
+- Export warns when the log has no code edits (you probably worked in another folder) and when timestamps are still waiting (Try again / Export anyway).
+- A warning appears when the recorded folder is very broad (for example your home folder).
+
+**Settings**
+
+- The TAP settings in effect are written at the start of every session, and every change during a session is recorded. Values that weaken the evidence are shown to the reader. Settings are limited to safe ranges (paste check 1–2 characters, bulk 2–40, checkpoints every 60–600 s, timestamps every 120–900 s); values outside them are ignored and the attempt is recorded.
+- Teachers can set a policy in `.tap/config.json`: `"policy": { "ai": "off", "suggestions": "off", "lockSettings": true, "requireShellIntegration": true }`.
+
+**Verifier and viewer**
+
+- Replay: code that arrived from outside the editor keeps that origin when an undo in the editor brings it back.
+- New findings: CLOCK_BEHIND (computer clock set behind real time, from the timestamp tokens), RECORDER_OUTDATED (log written by a recorder older than 0.3.0), SETTINGS_WEAKENED, SETTINGS_CHANGED, AI_DECLARED_OFF / AI_DECLARED_ON / AI_NOT_ANSWERED, AI_ON_AFTER_DECLARED_OFF, AI_AVAILABLE, AWAY_FROM_EDITOR, OPEN_OUTSIDE_FOLDER, TERMINAL_NOT_MONITORED, TERMINAL_OUTSIDE_FOLDER, TERMINAL_CODE_REUSED, BROAD_FOLDER. None of them changes the verdict.
+- The viewer's checklist has a "How the code was written" row and a "Points to review" box; Events has an "AI, settings & outside" filter and shows terminal output.
+- The extension checks once a day for a newer release and offers to open the download page (`tap.checkForUpdates`).
+- The export's success message and HOW-TO-VERIFY.txt say to submit the zip exactly as it is.
+
 ## 0.3.2
 
 - Records no longer get a smaller monotonic time than the record before them when a timestamp is written while a slower job (such as a disk check) is running. This removes the MONO_BACKWARDS warning ("monotonic time decreased within a session").

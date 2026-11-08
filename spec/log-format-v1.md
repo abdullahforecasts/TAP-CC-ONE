@@ -119,15 +119,15 @@ Field types are given in `schema-v1.cddl`. Summary:
 
 | Code | Kind | Body |
 |---|---|---|
-| 1 | SESSION_START | `sid` bstr16, `pub` bstr32 (Ed25519 public key), `vsc`, `app`, `os`, `ext` tstr, `aiExt` [tstr], `liveShare` bool, `cfgHash` bstr32, `settings`? map |
+| 1 | SESSION_START | `sid` bstr16, `pub` bstr32 (Ed25519 public key), `vsc`, `app`, `os`, `ext` tstr, `aiExt` [tstr], `liveShare` bool, `cfgHash` bstr32, `settings`? map, `aiChoice`? ∈ off, on, unanswered, enforced-off, `ai`? AiState, `editor`? map, `policy`? map |
 | 2 | SESSION_END | `sid`, `reason` ∈ close, reload, deactivate |
 | 3 | FILE_SNAPSHOT | `f` uint, `path`, `origin`, `text` tstr, `h` bstr32, `eol` ∈ lf, crlf, `enc` tstr |
 | 4 | EDIT_BATCH | `f`, `c`: one or more change tuples (§5.4) |
 | 5 | SAVE | `f`, `h` bstr32, `n` uint |
 | 6 | FILE_OP | `op` ∈ create, delete, rename; `f`; `path`; `newPath` (required for rename, forbidden otherwise); `origin` ∈ editor, external, fromUntitled |
 | 7 | EXTERNAL_CHANGE | `f`, `h`, `hint`? = "vcs" |
-| 8 | RUN_START | `rid` uint, `kind` ∈ debug, task, terminal, `name`?, `cmd`?, `cwd`? path |
-| 9 | RUN_END | `rid`, `exit`? int |
+| 8 | RUN_START | `rid` uint, `kind` ∈ debug, task, terminal, `name`?, `cmd`?, `cwd`? path, `outside`? bool (terminal command run outside the recorded folder; `cwd` is then omitted) |
+| 9 | RUN_END | `rid`, `exit`? int, `out`? tstr ≤ 65 536 (terminal output, escape sequences removed, secrets masked), `outLen`? uint (total output length before truncation) |
 | 10 | FOCUS | `on` bool |
 | 11 | PAUSE | `why`? tstr |
 | 12 | RESUME | (empty) |
@@ -137,9 +137,17 @@ Field types are given in `schema-v1.cddl`. Summary:
 | 16 | NOTE | `text`: 1 to 2000 code points |
 | 17 | KEY_ROTATION | `oldPub`? bstr32, `newPub` bstr32, `why` ∈ lost, manual |
 | 18 | CLOCK_ANOMALY | `wallDelta` int, `monoDelta` uint |
-| 19 | ENV_CHANGE | any of `vsc`, `aiExt`, `liveShare`, `cfgHash`, `settings` |
+| 19 | ENV_CHANGE | any of `vsc`, `aiExt`, `liveShare`, `cfgHash`, `settings`, `aiChoice`, `ai` AiState, `editor` map, `open` [OpenItem] (the full list of things open outside the recorded folder; replaces the previous list) |
 
 Snapshot `origin` ∈ preexisting, created, external, resync, paused-gap, periodic.
+
+The optional fields added in revision 1.1 (recorder 0.3.3) are:
+
+- **AiState** = map `{ on: bool, inline: bool, chat: bool, active: [tstr] }`: whether AI assistance (suggestions or chat) was available, whether ghost-text inline suggestions could appear, whether AI features were not turned off, and which AI-assist extensions were active.
+- **OpenItem** = map `{ k ∈ file, untitled, web, notebook, terminal, other, name: tstr ≤ 300, vis?: bool, mon?: bool }`: something open in the window that is not a file of the recorded folder. `name` is a file's base name or a tab or terminal label, never a full path; `vis` means shown in an editor group; `mon` (terminals) says whether its commands can be recorded.
+- `editor`: suggestion settings and counts of user snippets and keybindings that type text (no content). `policy`: the teacher's policy from `.tap/config.json`. `aiChoice`: the student's answer to "turn off AI features while recording?" (`enforced-off` when the policy decided).
+
+Older verifiers ignore these fields (§5.2), so revision 1.1 logs remain format version 1.
 
 ### 5.4 Change tuples
 
@@ -258,7 +266,7 @@ A snapshot that changes a live file's text is reported as: `external` → EXTERN
 
 ### 7.1 Provenance (informative)
 
-Verifiers SHOULD track the origin of every UTF-16 unit of each file: `typed`, `paste`, `internal-copy`, `bulk`, `format`, `undo-redo` (from change flags, in that precedence order: undo/redo, format, paste, bulk, typed), and `preexisting`, `created`, `external`, `resync`, `paused-gap` (from snapshots). A paste whose EOL-normalised, non-blank text already occurs in a live file is `internal-copy`. When a change or a snapshot replaces text, only what differs gets the new origin: the deleted and inserted texts (for a snapshot, the old and new file) are reduced by `minimalEdits` — strip the longest common prefix and suffix, diff the remaining lines with Myers' algorithm (at most 1000 line edits and 20000 lines per side, otherwise the remainder is one edit), and strip each differing run's own common prefix and suffix — and only those edits take the change's or snapshot's origin; the rest keeps its origin. Text inserted by an undo or redo change that equals text removed earlier from the same file (the newest of the last 64 removals per file) regains the origins it had when removed; otherwise it is `undo-redo`. Provenance never affects the verdict.
+Verifiers SHOULD track the origin of every UTF-16 unit of each file: `typed`, `paste`, `internal-copy`, `bulk`, `completion`, `format`, `undo-redo` (from change flags and text, in that precedence order: undo/redo, format, paste, bulk, completion, typed), and `preexisting`, `created`, `external`, `resync`, `paused-gap` (from snapshots). Since revision 1.1, bulk and completion are decided from the inserted text as well as the flags, so recorder settings cannot hide them: a change without PASTE, UNDO, REDO or FORMAT_ON_SAVE whose inserted text is at least 40 UTF-16 units long, or contains a line break and is at least 20 long, is `bulk`; otherwise, one that inserts at least 3 non-whitespace characters is `completion` (typing inserts one character per change, plus auto-closed pairs and indentation). A paste whose EOL-normalised, non-blank text already occurs in a live file is `internal-copy`. When a change or a snapshot replaces text, only what differs gets the new origin: the deleted and inserted texts (for a snapshot, the old and new file) are reduced by `minimalEdits` — strip the longest common prefix and suffix, diff the remaining lines with Myers' algorithm (at most 1000 line edits and 20000 lines per side, otherwise the remainder is one edit), and strip each differing run's own common prefix and suffix — and only those edits take the change's or snapshot's origin; the rest keeps its origin. Text inserted by an undo or redo change that equals text removed earlier from the same file (the newest of the last 64 removals per file), or is contained in such a removal when at least 8 units long, regains the origins it had when removed; otherwise it is `undo-redo`. Text replaced by a snapshot counts as removed, so undoing a change made outside the editor brings back the outside origin. Provenance never affects the verdict.
 
 ## 8. Recovery
 
@@ -291,7 +299,19 @@ Stages, in order:
 
    **Coverage** is the share of EDIT_BATCH records that come before the last anchored checkpoint. Also reported: OTS_PENDING (info) when a checkpoint has a pending OpenTimestamps proof and no confirmed one; NO_VALID_ANCHORS (warn) when no checkpoint is anchored and no token is invalid; ANCHORS_OK (pass) otherwise, with ANCHOR_COVERAGE_PARTIAL (info) when coverage is below 95 %.
 5. **replay**: §7, stopping at the first failure. Before applying each CHECKPOINT, the state digest and live-file count MUST equal its `state` and `files` (CHECKPOINT_STATE_MISMATCH, fail). Also reported: SESSION_NOT_CLOSED (info: a SESSION_START or RECOVERY while a session is open), RECORD_OUTSIDE_SESSION (warn: any record other than RECOVERY or KEY_ROTATION between SESSION_END and the next SESSION_START), SESSION_ID_MISMATCH (warn), CLOCK_BACKWARDS (warn: `t` decreases by more than 2 s), MONO_BACKWARDS (warn: `m` decreases within a session; at most 10 CLOCK_BACKWARDS and MONO_BACKWARDS findings in total), CLOCK_ANOMALY (warn), RECOVERED (warn), PAUSED (info), EXTERNAL_WITHOUT_SNAPSHOT (warn).
+   Since revision 1.1 this stage also reports CLOCK_BEHIND (warn) when there are at least two valid RFC 3161 tokens and every token's time is more than 10 minutes after the time of the ANCHOR record holding it (tokens are written right after the authority answers, so the difference is the computer clock's error).
 6. **submission** (when submitted files are given): each submitted path (with `\` converted to `/` and a leading `./` removed) is compared by contentHash with the live file of that path. SUBMISSION_MISMATCH and SUBMISSION_NOT_UTF8 are `fail`; UNTRACKED_SUBMITTED_FILE is `warn`; SUBMISSION_FILE_MISSING (logged but not submitted) is `info`.
+
+7. **activity** (revision 1.1, informative): how the code was written around the edits. Never `fail`.
+   - RECORDER_OUTDATED (warn): the header's `tool` is `tap-cc-one/<version>` and a session's `ext` is older than 0.3.0.
+   - SETTINGS_WEAKENED (warn): a session's `settings` turn off focus, terminal or timestamp recording, raise the paste-check threshold above 2, the bulk threshold above 40 or the checkpoint interval above 600 s, or list ignored values (`tap.ignored`). SETTINGS_CHANGED (warn when weaker, else info): a setting changed during a session (ENV_CHANGE `settings`).
+   - AI_DECLARED_OFF, AI_DECLARED_ON, AI_NOT_ANSWERED (info) from the last `aiChoice`; AI_ON_AFTER_DECLARED_OFF (warn) when AiState `on` overlaps the time after AI was declared off by more than a 60 s grace period; AI_AVAILABLE (info) otherwise when AI was on.
+   - AWAY_FROM_EDITOR (info): FOCUS off periods totalling at least a minute.
+   - OPEN_OUTSIDE_FOLDER: one per item of ENV_CHANGE `open` (terminals excluded); warn for `web`, `file` and `notebook` items shown for at least a minute, else info.
+   - TERMINAL_NOT_MONITORED (warn): an `open` terminal with `mon` false. TERMINAL_OUTSIDE_FOLDER (info): RUN_START records with `outside`.
+   - TERMINAL_CODE_REUSED (warn): code lines of a terminal command's output (whitespace removed, at least 10 characters, containing one of `;{}()=<>[]`) that were not in the files when the command ended and are present in them at a later CHECKPOINT or SAVE within 90 minutes: at least 3 lines and at least 30 % of the output's code lines.
+   - BROAD_FOLDER (info): more than 50 live files at the end.
+   In stage 5, an EXTERNAL_CHANGE or EXTERNAL_FILE finding within 120 s after a terminal RUN_START names that command.
 
 Resource limits: at most 10 000 000 records and 50 000 live files.
 
@@ -316,4 +336,7 @@ The chain detects any change to a record that has a later record linking to it. 
 | Anchor verification | §9.7 | §6.4 and §9 stage 4, with fixed tolerances (120 s ahead, 15 min late, 95 % coverage) | Makes the result reproducible across implementations. |
 | RFC 3161 `certReq` | true for the first token only | always true | Every token then verifies on its own, offline, at the cost of about 2 KB per token. |
 | Token parsing library | PKI.js | a small DER reader and synchronous signature checks | Keeps the viewer bundle small and the verifier synchronous; interoperability is tested against OpenSSL-made tokens. |
+| Inserts without flags | `typed` | `completion` (3+ non-whitespace characters) or `bulk` (40+ characters), decided from the text (revision 1.1) | Field test EVAL-02: accepted suggestions and settings that raised the bulk threshold made editor inserts look typed. |
+| Undo after an outside change | `undo-redo` | the outside origin (revision 1.1) | An undo in the editor hid code that had arrived from another program. |
+| Activity | not specified | stage 7, revision 1.1 | AI choice and availability, time away, things open outside the folder, terminal output reused in the code. |
 | Late anchors | not specified | a checkpoint written while offline is anchored when the network returns, possibly in a later session; ANCHORED_LATE is informational | Students work offline; the anchor still bounds everything before the checkpoint. |

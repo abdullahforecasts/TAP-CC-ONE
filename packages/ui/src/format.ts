@@ -62,6 +62,7 @@ export const ORIGIN_LABEL: Record<Origin, string> = {
   paste: 'pasted from outside',
   'internal-copy': 'copied from own files',
   bulk: 'tool / AI insert',
+  completion: 'completion / short insert',
   format: 'format on save',
   external: 'changed outside the editor',
   preexisting: 'already there',
@@ -76,6 +77,8 @@ export const ORIGIN_HELP: Record<Origin, string> = {
   paste: 'Pasted from the clipboard; the text did not exist elsewhere in the workspace.',
   'internal-copy': 'Pasted text that already existed in another file of the workspace.',
   bulk: 'Inserted in one go without the clipboard: AI completions (Copilot…), agents working inside the editor (Kilo Code, Cline…), snippets or refactorings. Which tool did it is not known; the AI extensions that were enabled are listed under "About this log".',
+  completion:
+    'Several characters inserted in one change without the clipboard: autocomplete, a snippet, part of an accepted AI suggestion, or a rename. Typing inserts one character at a time.',
   format: 'Changed by a formatter or save action when the file was saved.',
   external:
     'Changed by another program while the file was not being edited in VS Code: git, another editor, or an AI agent writing files directly (Claude Code in a terminal…).',
@@ -94,6 +97,7 @@ export const ORIGIN_ORDER: Origin[] = [
   'internal-copy',
   'paste',
   'bulk',
+  'completion',
   'preexisting',
   'created',
   'external',

@@ -213,7 +213,9 @@ describe('Recorder: classification in context', () => {
     expect(o.paste?.chars).toBe('int solve(int n) { return n * 2; }\n'.length);
     expect(o['internal-copy']?.chars).toBe(helper.length);
     expect(o.bulk?.chars).toBe('printf("%d\\n", solve(add(1, 2)));  // completion\n'.length);
-    expect(o.typed?.chars).toBe('// main\n'.length + 'stdio'.length);
+    // A short insert of several characters in one change is a completion, not typing (0.3.3).
+    expect(o.completion?.chars).toBe('stdio'.length);
+    expect(o.typed?.chars).toBe('// main\n'.length);
   });
 
   it('marks clipboard checks that take too long', async () => {

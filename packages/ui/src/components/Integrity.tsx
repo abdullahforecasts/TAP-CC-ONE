@@ -8,6 +8,7 @@ const ROWS: Array<{ stage: Stage; label: string }> = [
   { stage: 'anchors', label: 'Independent timestamps' },
   { stage: 'replay', label: 'Replay of every change' },
   { stage: 'submission', label: 'Matches the files' },
+  { stage: 'activity', label: 'How the code was written' },
 ];
 
 type RowState = 'pass' | 'warn' | 'fail' | 'none';
@@ -70,7 +71,9 @@ export function Integrity({
           const text =
             stage === 'submission' && state === 'none' && !comparedWith
               ? 'No files to compare with'
-              : (finding?.message ?? (state === 'none' ? 'Not checked' : ''));
+              : stage === 'activity' && state === 'none'
+                ? 'Nothing to point out'
+                : (finding?.message ?? (state === 'none' ? 'Not checked' : ''));
           return (
             <li key={stage} class={`check ${state}`} title={text}>
               <span class="check-icon" aria-hidden="true">
@@ -84,6 +87,23 @@ export function Integrity({
           );
         })}
       </ul>
+      {(() => {
+        const review = report.findings.filter((f) => f.stage === 'activity' && f.severity !== 'pass');
+        if (review.length === 0) return null;
+        const sorted = [...review].sort((a, b) => RANK[b.severity] - RANK[a.severity]);
+        return (
+          <div class="review" data-testid="review">
+            <h3>Points to review</h3>
+            <ul>
+              {sorted.map((f, i) => (
+                <li key={i} class={f.severity}>
+                  {f.message}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })()}
       {open && (
         <ul class="findings">
           {report.findings.map((f, i) => (

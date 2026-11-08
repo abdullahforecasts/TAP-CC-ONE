@@ -47,6 +47,10 @@ export class Uri {
   static from(parts: { scheme: string; path: string }): Uri {
     return new Uri(parts.scheme, parts.path);
   }
+  static parse(value: string): Uri {
+    const i = value.indexOf(':');
+    return new Uri(value.slice(0, i), value.slice(i + 1).replace(/^\/\//, ''));
+  }
   static joinPath(base: Uri, ...segments: string[]): Uri {
     return new Uri(base.scheme, path.join(base.fsPath, ...segments));
   }
@@ -140,13 +144,71 @@ const emitters = {
     exitCode: number | undefined;
   }>(),
   extensions: new EventEmitter<void>(),
-  terminalStart: new EventEmitter<{ execution: FakeShellExecution }>(),
-  terminalEnd: new EventEmitter<{ execution: FakeShellExecution; exitCode: number | undefined }>(),
+  terminalStart: new EventEmitter<{ execution: FakeShellExecution; terminal?: FakeTerminal }>(),
+  terminalEnd: new EventEmitter<{
+    execution: FakeShellExecution;
+    exitCode: number | undefined;
+    terminal?: FakeTerminal;
+  }>(),
+  configuration: new EventEmitter<{ affectsConfiguration(section: string): boolean }>(),
+  activeEditor: new EventEmitter<unknown>(),
+  tabs: new EventEmitter<void>(),
+  tabGroups: new EventEmitter<void>(),
+  terminalOpen: new EventEmitter<FakeTerminal>(),
+  terminalClose: new EventEmitter<FakeTerminal>(),
+  activeTerminal: new EventEmitter<FakeTerminal | undefined>(),
+  shellIntegration: new EventEmitter<{ terminal: FakeTerminal }>(),
 };
 
 export interface FakeShellExecution {
   commandLine: { value: string };
   cwd?: Uri;
+  /** Output chunks the command prints (read() yields them). */
+  output?: string[];
+  read?: () => AsyncIterable<string>;
+}
+
+export interface FakeTerminal {
+  name: string;
+  shellIntegration?: unknown;
+}
+
+export class TabInputText {
+  constructor(readonly uri: Uri) {}
+}
+export class TabInputTextDiff {
+  constructor(
+    readonly original: Uri,
+    readonly modified: Uri,
+  ) {}
+}
+export class TabInputNotebook {
+  constructor(readonly uri: Uri) {}
+}
+export class TabInputNotebookDiff {
+  constructor(
+    readonly original: Uri,
+    readonly modified: Uri,
+  ) {}
+}
+export class TabInputCustom {
+  constructor(readonly uri: Uri) {}
+}
+export class TabInputWebview {
+  constructor(readonly viewType: string) {}
+}
+export class TabInputTerminal {}
+
+export interface FakeTab {
+  label: string;
+  isActive: boolean;
+  input: unknown;
+}
+
+export enum ConfigurationTarget {
+  Global = 1,
+  Workspace = 2,
+  WorkspaceFolder = 3,
 }
 
 export interface WorkspaceFolder {
@@ -182,6 +244,12 @@ export const workspace = {
   onDidRenameFiles: emitters.rename.event,
   onWillRenameFiles: emitters.willRename.event,
   onDidChangeWorkspaceFolders: emitters.folders.event,
+  onDidChangeConfiguration: emitters.configuration.event,
+  getWorkspaceFolder(uri: Uri): WorkspaceFolder | undefined {
+    return (workspace.workspaceFolders ?? []).find(
+      (f) => uri.fsPath === f.uri.fsPath || uri.fsPath.startsWith(f.uri.fsPath + path.sep),
+    );
+  },
   createFileSystemWatcher(pattern: RelativePattern): FileSystemWatcher {
     const base = pattern.base as WorkspaceFolder;
     const w = new FileSystemWatcher(base.uri.fsPath);
@@ -199,11 +267,16 @@ export const workspace = {
       fs.writeFileSync(uri.fsPath, content);
     },
   },
-  getConfiguration(section: string) {
+  getConfiguration(section: string, _scope?: unknown) {
     return {
       get<T>(key: string, fallback?: T): T {
         const full = `${section}.${key}`;
         return (configuration.has(full) ? configuration.get(full) : fallback) as T;
+      },
+      async update(key: string, value: unknown): Promise<void> {
+        const full = `${section}.${key}`;
+        configuration.set(full, value);
+        emitters.configuration.fire({ affectsConfiguration: (s: string) => full.startsWith(s) });
       },
     };
   },
@@ -337,6 +410,19 @@ export const window = {
   },
   onDidStartTerminalShellExecution: emitters.terminalStart.event,
   onDidEndTerminalShellExecution: emitters.terminalEnd.event,
+  activeTextEditor: undefined as { document: TextDocument } | undefined,
+  onDidChangeActiveTextEditor: emitters.activeEditor.event,
+  tabGroups: {
+    all: [] as Array<{ tabs: FakeTab[] }>,
+    onDidChangeTabs: emitters.tabs.event,
+    onDidChangeTabGroups: emitters.tabGroups.event,
+  },
+  terminals: [] as FakeTerminal[],
+  activeTerminal: undefined as FakeTerminal | undefined,
+  onDidOpenTerminal: emitters.terminalOpen.event,
+  onDidCloseTerminal: emitters.terminalClose.event,
+  onDidChangeActiveTerminal: emitters.activeTerminal.event,
+  onDidChangeTerminalShellIntegration: emitters.shellIntegration.event,
   async withProgress<T>(_options: unknown, task: () => Promise<T>): Promise<T> {
     return task();
   },
@@ -373,6 +459,11 @@ export const window = {
 export const env = {
   appName: 'Visual Studio Code',
   sessionId: 'session-1',
+  opened: [] as string[],
+  async openExternal(uri: Uri): Promise<boolean> {
+    env.opened.push(uri.toString());
+    return true;
+  },
   clipboard: {
     value: '',
     async readText(): Promise<string> {
@@ -409,7 +500,7 @@ export const tasks = {
 };
 
 export const extensions = {
-  all: [] as Array<{ id: string }>,
+  all: [] as Array<{ id: string; isActive?: boolean }>,
   getExtension(id: string) {
     return extensions.all.find((e) => e.id.toLowerCase() === id.toLowerCase());
   },
@@ -456,8 +547,15 @@ export const driver = {
     ui.files.length = 0;
     ui.dialogs.length = 0;
     configuration.clear();
+    // Tests never ask GitHub for releases.
+    configuration.set('tap.checkForUpdates', false);
     commandRegistry.clear();
     extensions.all = [];
+    window.activeTextEditor = undefined;
+    window.tabGroups.all = [];
+    window.terminals = [];
+    window.activeTerminal = undefined;
+    env.opened = [];
     env.clipboard.value = '';
     env.sessionId = 'session-1';
     window.state.focused = true;
@@ -480,7 +578,7 @@ export const driver = {
           secretStore.set(k, v);
         },
       },
-      extension: { packageJSON: { version: '0.1.0' } },
+      extension: { packageJSON: { version: '0.3.3' } },
     };
   },
 

@@ -54,7 +54,7 @@ export class Script {
     this.t = BASE_TIME;
     this.writer = LogWriter.create({
       created: BASE_TIME,
-      tool: 'tap-cc-one/0.1.0 (vector generator)',
+      tool: 'tap-cc-one/0.3.0 (vector generator)',
       label: options.label ?? options.id,
       logId: seeded(`log/${options.id}`, 16),
       targetBlockSize: options.targetBlockSize ?? 4096,
@@ -84,7 +84,7 @@ export class Script {
       vsc: '1.105.0',
       app: 'vscode',
       os: 'linux',
-      ext: '0.1.0',
+      ext: '0.3.0',
       aiExt: [],
       liveShare: false,
       cfgHash: seeded('cfg/default'),

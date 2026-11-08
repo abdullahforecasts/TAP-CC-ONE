@@ -77,6 +77,9 @@ export function howToVerify(input: ExportInput, logName: string): string {
     '',
     'The log shows how the code was written. It is evidence for a person to interpret, not a verdict.',
     '',
+    'Students: submit this zip exactly as it is. Do not unzip it, rename the files inside or re-zip it,',
+    'and upload only this one file.',
+    '',
   ].join('\r\n');
 }
 

@@ -13,6 +13,7 @@ const FILTERS: Array<{ id: EventCategory; label: string }> = [
   { id: 'file', label: 'Files' },
   { id: 'session', label: 'Sessions' },
   { id: 'pause', label: 'Pauses' },
+  { id: 'environment', label: 'AI, settings & outside' },
   { id: 'integrity', label: 'Integrity' },
 ];
 
@@ -54,6 +55,12 @@ export function Events({ model }: { model: LogModel }) {
               {e.label}
               {e.chars !== undefined && <span class="muted"> · {fmtCount(e.chars)} characters</span>}
               {e.detail && <span class="muted"> · {e.detail}</span>}
+              {e.output !== undefined && (
+                <details class="output">
+                  <summary>Terminal output ({e.output.split('\n').length} lines)</summary>
+                  <pre>{e.output}</pre>
+                </details>
+              )}
             </span>
             {e.f !== undefined && model.tracks.some((t) => t.f === e.f && t.events.length > 0) && (
               <button type="button" class="link" onClick={() => replay(e)}>

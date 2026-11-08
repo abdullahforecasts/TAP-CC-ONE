@@ -123,7 +123,7 @@ export function demoLog(scale = 1): DemoLog {
   // A typo fixed after the failed run.
   const text1 = texts.get(1)!;
   const fixAt = text1.indexOf('return [seen');
-  change(1, fixAt, 0, '# found\n            ', 0, 2000);
+  type(1, fixAt, '# found\n            ');
   // Paste from another file in the workspace, then from outside.
   change(1, 0, 0, 'def read_ints():\n    return list(map(int, input().split()))\n', Flag.PASTE, 3000);
   change(

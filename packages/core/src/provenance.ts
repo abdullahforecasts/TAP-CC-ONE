@@ -7,6 +7,7 @@ export type Origin =
   | 'paste'
   | 'internal-copy'
   | 'bulk'
+  | 'completion'
   | 'format'
   | 'external'
   | 'preexisting'
@@ -20,6 +21,7 @@ export const ORIGINS: readonly Origin[] = [
   'paste',
   'internal-copy',
   'bulk',
+  'completion',
   'format',
   'external',
   'preexisting',
@@ -29,15 +31,29 @@ export const ORIGINS: readonly Origin[] = [
   'resync',
 ];
 
+/** Inserts this long (or multi-line inserts of BULK_MULTILINE_MIN) count as bulk, whatever the recorder flagged. */
+export const BULK_MIN_CHARS = 40;
+export const BULK_MULTILINE_MIN = 20;
 /**
- * Origin of an inserted change from its flags. Precedence: undo/redo > format-on-save > paste >
- * bulk > typed. `internalCopy` refines a paste whose text already existed in the workspace.
+ * A single change inserting at least this many non-whitespace characters, without being a paste,
+ * was inserted by the editor (autocomplete, snippet, accepted AI suggestion, rename...): typing
+ * inserts one character per change, plus auto-closed pairs and indentation (spec §7.1).
  */
-export function originFromFlags(flags: number, internalCopy: boolean): Origin {
+export const COMPLETION_MIN_NON_WS = 3;
+
+/**
+ * Origin of an inserted change from its flags and text. Precedence: undo/redo > format-on-save >
+ * paste > bulk > completion > typed. `internalCopy` refines a paste whose text already existed in
+ * the workspace. Bulk and completion are decided from the inserted text itself, so recorder
+ * settings cannot hide them (a log's BULK flag is still honoured).
+ */
+export function originFromFlags(flags: number, internalCopy: boolean, ins = ''): Origin {
   if (flags & (Flag.UNDO | Flag.REDO)) return 'undo-redo';
   if (flags & Flag.FORMAT_ON_SAVE) return 'format';
   if (flags & Flag.PASTE) return internalCopy ? 'internal-copy' : 'paste';
   if (flags & Flag.BULK) return 'bulk';
+  if (ins.length >= BULK_MIN_CHARS || (ins.includes('\n') && ins.length >= BULK_MULTILINE_MIN)) return 'bulk';
+  if (countNonWhitespace(ins) >= COMPLETION_MIN_NON_WS) return 'completion';
   return 'typed';
 }
 

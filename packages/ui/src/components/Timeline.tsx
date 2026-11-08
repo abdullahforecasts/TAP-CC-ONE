@@ -23,6 +23,7 @@ const LANES = [
   { id: 'note', label: 'Notes' },
   { id: 'pause', label: 'Paused' },
   { id: 'unfocused', label: 'Window not focused' },
+  { id: 'ai', label: 'AI available' },
   { id: 'anchor', label: 'Timestamps' },
 ] as const;
 
@@ -118,7 +119,7 @@ export function Timeline({ model, report }: { model: LogModel; report?: VerifyRe
     for (const b of tl.activity) times.push(b.t, b.t + 60_000);
     for (const m of tl.markers) if (m.lane !== 'anchor') times.push(m.t);
     for (const a of anchors) times.push(a.t);
-    for (const r of [...tl.pauses, ...tl.unfocused]) times.push(r.from, r.to);
+    for (const r of [...tl.pauses, ...tl.unfocused, ...(tl.aiOn ?? [])]) times.push(r.from, r.to);
     for (const s of tl.sessions) times.push(s.from, s.to);
     return buildAxis(times, plotW);
   }, [tl, anchors, plotW]);
@@ -143,7 +144,8 @@ export function Timeline({ model, report }: { model: LogModel; report?: VerifyRe
     const track = model.tracks.find((t) => t.f === m.f);
     if (track) openReplay(m.f, indexAfterSeq(track, m.seq));
   };
-  const range = (r: Range, lane: 'pause' | 'unfocused', key: string) => (
+  const RANGE_TEXT = { pause: 'Recording paused', unfocused: 'Window not focused', ai: 'AI available' };
+  const range = (r: Range, lane: 'pause' | 'unfocused' | 'ai', key: string) => (
     <rect
       key={key}
       class={`range ${lane}`}
@@ -153,8 +155,7 @@ export function Timeline({ model, report }: { model: LogModel; report?: VerifyRe
       height={14}
     >
       <title>
-        {lane === 'pause' ? 'Recording paused' : 'Window not focused'}: {fmtTime(r.from)} – {fmtTime(r.to)} (
-        {fmtDuration(r.to - r.from)})
+        {RANGE_TEXT[lane]}: {fmtTime(r.from)} – {fmtTime(r.to)} ({fmtDuration(r.to - r.from)})
       </title>
     </rect>
   );
@@ -223,6 +224,7 @@ export function Timeline({ model, report }: { model: LogModel; report?: VerifyRe
           })}
           {tl.pauses.map((r, i) => range(r, 'pause', `p${i}`))}
           {tl.unfocused.map((r, i) => range(r, 'unfocused', `u${i}`))}
+          {(tl.aiOn ?? []).map((r, i) => range(r, 'ai', `ai${i}`))}
           {anchors.map((a, i) => {
             const x = X(a.t);
             const y = laneY('anchor');
