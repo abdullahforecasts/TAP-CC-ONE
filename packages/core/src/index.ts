@@ -19,6 +19,7 @@ export * from './provenance.js';
 export * from './reader.js';
 export * from './records.js';
 export * from './recovery.js';
+export * from './removed.js';
 export * from './replay.js';
 export * from './text.js';
 export * from './textdiff.js';

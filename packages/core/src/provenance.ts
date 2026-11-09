@@ -35,26 +35,39 @@ export const ORIGINS: readonly Origin[] = [
 export const BULK_MIN_CHARS = 40;
 export const BULK_MULTILINE_MIN = 20;
 /**
- * A single change inserting at least this many non-whitespace characters, without being a paste,
- * was inserted by the editor (autocomplete, snippet, accepted AI suggestion, rename...): typing
- * inserts one character per change, plus auto-closed pairs and indentation (spec §7.1).
+ * A change inserting at least this many non-whitespace characters, at the cursor or in place of
+ * one word, was inserted by the editor (autocomplete, snippet, accepted suggestion):
+ * typing inserts one character per change, plus auto-closed pairs and indentation (spec §7.1).
  */
 export const COMPLETION_MIN_NON_WS = 3;
 
+/** Whether inserted text is long enough to have come from a tool rather than the keyboard. */
+export function isBulkText(text: string): boolean {
+  return text.length >= BULK_MIN_CHARS || (text.includes('\n') && text.length >= BULK_MULTILINE_MIN);
+}
+
 /**
- * Origin of an inserted change from its flags and text. Precedence: undo/redo > format-on-save >
- * paste > bulk > completion > typed. `internalCopy` refines a paste whose text already existed in
- * the workspace. Bulk and completion are decided from the inserted text itself, so recorder
- * settings cannot hide them (a log's BULK flag is still honoured).
+ * Origin of an insert that is not an undo, redo, save-time format or paste, from the inserted
+ * text and the text it replaced: bulk, completion (inserted at the cursor, or replacing one
+ * word, as the suggestion widget does) or typed. The recorder's BULK flag is not used, so
+ * recorder settings cannot change the result (spec §7.1).
  */
-export function originFromFlags(flags: number, internalCopy: boolean, ins = ''): Origin {
+export function insertOrigin(ins: string, deleted = ''): Origin {
+  if (isBulkText(ins)) return 'bulk';
+  if (!/\s/.test(deleted) && countNonWhitespace(ins) >= COMPLETION_MIN_NON_WS) return 'completion';
+  return 'typed';
+}
+
+/**
+ * Origin of a change from its flags and text. Precedence: undo/redo > format-on-save > paste >
+ * bulk > completion > typed. `internalCopy` refines a paste whose text already existed in the
+ * workspace; `deleted` is the text the change replaced.
+ */
+export function originFromFlags(flags: number, internalCopy: boolean, ins = '', deleted = ''): Origin {
   if (flags & (Flag.UNDO | Flag.REDO)) return 'undo-redo';
   if (flags & Flag.FORMAT_ON_SAVE) return 'format';
   if (flags & Flag.PASTE) return internalCopy ? 'internal-copy' : 'paste';
-  if (flags & Flag.BULK) return 'bulk';
-  if (ins.length >= BULK_MIN_CHARS || (ins.includes('\n') && ins.length >= BULK_MULTILINE_MIN)) return 'bulk';
-  if (countNonWhitespace(ins) >= COMPLETION_MIN_NON_WS) return 'completion';
-  return 'typed';
+  return insertOrigin(ins, deleted);
 }
 
 export interface Span {

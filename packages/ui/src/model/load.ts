@@ -4,6 +4,7 @@
  */
 import {
   type AnchorVerifier,
+  type AttachmentRef,
   CODEC_NONE,
   checkMagic,
   concatBytes,
@@ -90,10 +91,15 @@ export class LogLoader {
     return this.builder.result();
   }
 
-  verify(submission?: readonly SubmittedFile[], anchorVerifier?: AnchorVerifier): VerifyReport {
+  verify(
+    submission?: readonly SubmittedFile[],
+    anchorVerifier?: AnchorVerifier,
+    attachments?: readonly AttachmentRef[],
+  ): VerifyReport {
     return verifyLog(this.bytes, {
       ...(submission ? { submission } : {}),
       ...(anchorVerifier ? { anchorVerifier } : {}),
+      ...(attachments ? { attachments } : {}),
     });
   }
 }

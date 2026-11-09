@@ -7,7 +7,16 @@ import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { type AiChoice, type AiState, type KeyPair, type OpenItem, toHex, toLogPath } from '@tap/core';
+import {
+  type AiChoice,
+  type AiState,
+  type Asset,
+  type KeyPair,
+  type OpenItem,
+  type RecordingMode,
+  toHex,
+  toLogPath,
+} from '@tap/core';
 import * as vscode from 'vscode';
 import type { AnchorService, AnchorSink } from '../anchoring/anchorService.js';
 import type { EditReason } from '../recorder/classify.js';
@@ -27,6 +36,7 @@ import {
   type RecorderState,
 } from '../recorder/recorder.js';
 import { cleanTerminalOutput, maskCommand, programName } from '../recorder/terminal.js';
+import { ASSET_SCAN_MAX, describeAsset, sameAsset, scanAssets } from '../storage/assets.js';
 import { readTrackedFile } from '../storage/diskReader.js';
 import {
   createMatcher,
@@ -55,6 +65,10 @@ export interface SessionContext {
   onStatusChange: () => void;
   /** Shared timestamp queue (absent in some tests). */
   anchors?: AnchorService;
+  /** Remembers a setting TAP changed (exam mode), so practice mode can put it back. */
+  rememberWrite?: (write: SettingWrite) => void;
+  /** Returns and forgets the settings TAP changed. */
+  takeWrites?: () => SettingWrite[];
 }
 
 const TICK_MS = 15_000;
@@ -65,6 +79,36 @@ const MAX_RAW_OUTPUT = 512 * 1024;
 const SHELL_INTEGRATION_WAIT_MS = 5_000;
 /** Debounce for the list of things open outside the folder. */
 const OPEN_DEBOUNCE_MS = 1_000;
+/** Wait before recording a change to an image, PDF... (they are often written in several steps). */
+const ASSET_DEBOUNCE_MS = 1_500;
+
+/** The rules exam mode applies (0.3.4): the same as a strict teacher policy. */
+export const EXAM_POLICY: FolderPolicy = {
+  ai: 'off',
+  suggestions: 'off',
+  lockSettings: true,
+  requireShellIntegration: true,
+};
+
+/** A setting TAP changed, with the value it replaced (undefined: it was not set there). */
+export interface SettingWrite {
+  section: string;
+  key: string;
+  target: vscode.ConfigurationTarget;
+  before: unknown;
+}
+
+const TARGET_NAME: Record<number, string> = { 1: 'user level', 2: 'workspace level', 3: 'folder level' };
+
+function inspectAt(
+  info: { globalValue?: unknown; workspaceValue?: unknown; workspaceFolderValue?: unknown } | undefined,
+  target: vscode.ConfigurationTarget,
+): unknown {
+  if (!info) return undefined;
+  if (target === vscode.ConfigurationTarget.Global) return info.globalValue;
+  if (target === vscode.ConfigurationTarget.Workspace) return info.workspaceValue;
+  return info.workspaceFolderValue;
+}
 
 /** The TAP settings a session records, as the user set them. */
 const TAP_SETTING_KEYS: ReadonlyArray<[key: string, fallback: boolean | number]> = [
@@ -101,6 +145,11 @@ export class FolderSession implements vscode.Disposable {
   /** Newest checkpoint already sent for timestamping. */
   private lastAnchoredCk = -1;
   private policy: FolderPolicy = DEFAULT_POLICY;
+  /** Exam or practice (0.3.4); the teacher's policy, when there is one, decides instead. */
+  private modeValue: RecordingMode = 'exam';
+  /** Files that are not recorded as text, as last recorded (0.3.4). */
+  private readonly assets = new Map<string, Asset>();
+  private readonly assetTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private lastAi = '';
   private lastOpen = '[]';
   private lastEditor = '';
@@ -147,12 +196,13 @@ export class FolderSession implements vscode.Disposable {
   }
 
   /** Opens (or creates) the log and starts recording. */
-  async start(options: { paused: boolean; aiChoice?: AiChoice }): Promise<void> {
+  async start(options: { paused: boolean; aiChoice?: AiChoice; mode?: RecordingMode }): Promise<void> {
     if (this.recorder) return;
     try {
       this.config = loadConfig(this.root);
       this.matcher = createMatcher(this.config.config);
-      this.policy = this.config.config.policy ?? DEFAULT_POLICY;
+      if (options.mode) this.modeValue = options.mode;
+      this.policy = this.effectivePolicy();
       await this.applyPolicy();
 
       this.lock = new FolderLock(path.join(this.tapDir, 'lock'), this.ctx.sessionId);
@@ -192,6 +242,14 @@ export class FolderSession implements vscode.Disposable {
       this.lastEditor = JSON.stringify(editor);
       this.lastSettings = JSON.stringify(tap);
       const policy = this.config.config.policy;
+      this.assets.clear();
+      let assets: Asset[] = [];
+      try {
+        assets = scanAssets(this.root, (rel) => this.matcher(rel));
+      } catch (e) {
+        this.ctx.log.warn(`${this.name}: could not list the folder's other files: ${String(e)}`);
+      }
+      for (const a of assets) this.assets.set(a.p, a);
       const options2: RecorderOptions = {
         writer: this.opened.writer,
         sink: this.opened.store,
@@ -204,6 +262,8 @@ export class FolderSession implements vscode.Disposable {
           ai,
           editor,
           ...(options.aiChoice ? { aiChoice: options.aiChoice } : {}),
+          mode: this.mode,
+          ...(assets.length > 0 ? { assets } : {}),
           ...(policy
             ? {
                 policy: {
@@ -269,6 +329,7 @@ export class FolderSession implements vscode.Disposable {
       if (ck) await this.ctx.anchors?.waitFor(this.logIdHex!, ck.s, 8000);
       await recorder.stop('close');
     }
+    await this.restoreUserSettings();
     this.teardown();
     if (this.statusValue !== 'error' && this.statusValue !== 'read-only') this.setStatus('stopped');
   }
@@ -290,6 +351,8 @@ export class FolderSession implements vscode.Disposable {
     this.timers = [];
     if (this.openTimer) clearTimeout(this.openTimer);
     this.openTimer = undefined;
+    for (const t of this.assetTimers.values()) clearTimeout(t);
+    this.assetTimers.clear();
     for (const d of this.disposables) d.dispose();
     this.disposables = [];
     this.opened?.store.close();
@@ -405,7 +468,30 @@ export class FolderSession implements vscode.Disposable {
     return env;
   }
 
-  /** Applies the teacher's policy to the folder's settings before recording starts (F3, G2, H5). */
+  /**
+   * The rules in effect: the teacher's policy from .tap/config.json when there is one, otherwise
+   * the recording mode (0.3.4). Exam mode turns AI features and code suggestions off, locks the
+   * TAP settings and turns terminal shell integration on; practice mode changes nothing.
+   */
+  private effectivePolicy(): FolderPolicy {
+    const teacher = this.config?.config.policy;
+    if (teacher) return teacher;
+    return this.modeValue === 'exam' ? EXAM_POLICY : DEFAULT_POLICY;
+  }
+
+  /** The recording mode in effect ('exam' when the teacher's policy turns AI off). */
+  get mode(): RecordingMode {
+    const teacher = this.config?.config.policy;
+    if (teacher) return teacher.ai === 'off' ? 'exam' : 'practice';
+    return this.modeValue;
+  }
+
+  /** Whether the teacher's policy decides the mode (the student cannot switch). */
+  get modeLocked(): boolean {
+    return this.config?.config.policy !== undefined;
+  }
+
+  /** Applies the rules in effect to the folder's settings before recording starts (F3, G2, H5). */
   private async applyPolicy(): Promise<void> {
     const changes: Array<[string, string, unknown]> = [];
     if (this.policy.ai === 'off') changes.push(...AI_OFF_SETTINGS);
@@ -416,15 +502,73 @@ export class FolderSession implements vscode.Disposable {
     await this.writeFolderSettings(changes);
   }
 
-  /** Writes settings for this folder only (its .vscode/settings.json). */
+  /**
+   * Writes settings for this folder: in its .vscode/settings.json when the setting allows it,
+   * else in the workspace, else (AI settings only, which some editors allow only there) in the
+   * user settings. Each value replaced is remembered so practice mode can put it back.
+   */
   async writeFolderSettings(changes: ReadonlyArray<readonly [string, string, unknown]>): Promise<void> {
+    const targets = [
+      vscode.ConfigurationTarget.WorkspaceFolder,
+      vscode.ConfigurationTarget.Workspace,
+      vscode.ConfigurationTarget.Global,
+    ];
     for (const [section, key, value] of changes) {
+      const c = vscode.workspace.getConfiguration(section, this.folder.uri);
+      if (JSON.stringify(c.get(key)) === JSON.stringify(value)) continue;
+      const aiSetting = AI_OFF_SETTINGS.some(([s2, k2]) => s2 === section && k2 === key);
+      let done = false;
+      for (const target of targets) {
+        if (target === vscode.ConfigurationTarget.Global && !aiSetting) break;
+        const before = inspectAt(c.inspect(key), target);
+        try {
+          await c.update(key, value, target);
+        } catch (e) {
+          this.ctx.log.info(
+            `${this.name}: ${section}.${key} cannot be set at ${TARGET_NAME[target]}: ${String(e)}`,
+          );
+          continue;
+        }
+        this.ctx.rememberWrite?.({ section, key, target, before });
+        done = true;
+        // A value written there may still be overridden by a narrower one: check what is in effect.
+        if (
+          JSON.stringify(vscode.workspace.getConfiguration(section, this.folder.uri).get(key)) ===
+          JSON.stringify(value)
+        )
+          break;
+      }
+      if (!done) this.ctx.log.warn(`${this.name}: could not set ${section}.${key}`);
+    }
+  }
+
+  /** Puts back the settings exam mode changed (switching to practice mode). */
+  private async restoreSettings(): Promise<void> {
+    const writes = this.ctx.takeWrites?.() ?? [];
+    for (const w of writes.reverse()) {
       try {
-        const c = vscode.workspace.getConfiguration(section, this.folder.uri);
-        if (JSON.stringify(c.get(key)) === JSON.stringify(value)) continue;
-        await c.update(key, value, vscode.ConfigurationTarget.WorkspaceFolder);
+        await vscode.workspace.getConfiguration(w.section, this.folder.uri).update(w.key, w.before, w.target);
       } catch (e) {
-        this.ctx.log.warn(`${this.name}: could not set ${section}.${key}: ${String(e)}`);
+        this.ctx.log.warn(`${this.name}: could not restore ${w.section}.${w.key}: ${String(e)}`);
+      }
+    }
+  }
+
+  /**
+   * Puts back AI settings exam mode had to change in the user settings (they apply to every
+   * folder), when recording stops. Folder settings stay: they are re-applied on the next start.
+   */
+  private async restoreUserSettings(): Promise<void> {
+    const writes = this.ctx.takeWrites?.() ?? [];
+    for (const w of writes.reverse()) {
+      if (w.target !== vscode.ConfigurationTarget.Global) {
+        this.ctx.rememberWrite?.(w);
+        continue;
+      }
+      try {
+        await vscode.workspace.getConfiguration(w.section, this.folder.uri).update(w.key, w.before, w.target);
+      } catch (e) {
+        this.ctx.log.warn(`${this.name}: could not restore ${w.section}.${w.key}: ${String(e)}`);
       }
     }
   }
@@ -433,6 +577,66 @@ export class FolderSession implements vscode.Disposable {
   async turnAiOff(): Promise<void> {
     await this.writeFolderSettings(AI_OFF_SETTINGS);
     this.checkAi();
+  }
+
+  /** Whether AI features are still available right now (after exam mode tried to turn them off). */
+  aiStillOn(): boolean {
+    return currentAiState(this.folder.uri).on;
+  }
+
+  /**
+   * Switches between exam and practice mode during a session (0.3.4). The switch is recorded;
+   * the teacher's policy, when there is one, cannot be switched.
+   */
+  async setMode(mode: RecordingMode): Promise<boolean> {
+    if (this.modeLocked || mode === this.modeValue) return false;
+    this.modeValue = mode;
+    this.policy = this.effectivePolicy();
+    if (mode === 'exam') await this.applyPolicy();
+    else await this.restoreSettings();
+    this.recorder?.environmentChanged({ mode, aiChoice: mode === 'exam' ? 'off' : 'on' });
+    this.checkAi();
+    const tap = this.tapSettings();
+    const key = JSON.stringify(tap);
+    if (key !== this.lastSettings) {
+      this.lastSettings = key;
+      this.recorder?.environmentChanged({ settings: tap });
+    }
+    return true;
+  }
+
+  /** Records a change to a file that is not recorded as text (0.3.4), after a short wait. */
+  private scheduleAsset(rel: string): void {
+    if (!this.recorder) return;
+    const old = this.assetTimers.get(rel);
+    if (old) clearTimeout(old);
+    this.assetTimers.set(
+      rel,
+      setTimeout(() => {
+        this.assetTimers.delete(rel);
+        if (!this.recorder) return;
+        let now: Asset | undefined;
+        try {
+          now = describeAsset(this.root, rel, (r) => this.matcher(r));
+        } catch {
+          now = undefined;
+        }
+        const known = this.assets.get(rel);
+        if (!now && known) {
+          this.assets.delete(rel);
+          this.recorder.environmentChanged({ assets: [{ p: rel, n: known.n, k: known.k, op: 'delete' }] });
+        } else if (now && (!known || !sameAsset(now, known))) {
+          if (!known && this.assets.size >= ASSET_SCAN_MAX) return;
+          this.assets.set(rel, now);
+          this.recorder.environmentChanged({ assets: [{ ...now, op: known ? 'change' : 'add' }] });
+        }
+      }, ASSET_DEBOUNCE_MS),
+    );
+  }
+
+  /** Files that are not recorded as text, present now (for the export). */
+  currentAssets(): Asset[] {
+    return [...this.assets.values()];
   }
 
   /** Records the student's answer to "turn off AI features while recording?" (G4). */
@@ -504,7 +708,12 @@ export class FolderSession implements vscode.Disposable {
       let items: OpenItem[];
       try {
         items = currentOpenItems(
-          (uri) => this.relOf(uri) !== undefined || this.isTapFile(uri),
+          (uri) => {
+            const rel = this.relOf(uri);
+            if (rel === undefined) return this.isTapFile(uri) ? 'recorded' : undefined;
+            if (rel.startsWith(`${TAP_DIR}/`) || this.matcher(rel)) return 'recorded';
+            return { rel };
+          },
           (terminal) => this.shellIntegration.get(terminal),
         );
       } catch (e) {
@@ -805,7 +1014,10 @@ export class FolderSession implements vscode.Disposable {
     const onDisk = (uri: vscode.Uri) => {
       const rel = this.relOf(uri);
       debug('disk event', uri.fsPath, rel);
-      if (rel && !rel.startsWith(`${TAP_DIR}/`)) r()?.onDiskEvent(rel);
+      if (rel && !rel.startsWith(`${TAP_DIR}/`)) {
+        r()?.onDiskEvent(rel);
+        this.scheduleAsset(rel);
+      }
     };
     d.push(watcher, watcher.onDidCreate(onDisk), watcher.onDidChange(onDisk), watcher.onDidDelete(onDisk));
   }

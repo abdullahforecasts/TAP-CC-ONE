@@ -7,13 +7,14 @@ import {
   addToComposition,
   type Composition,
   emptyComposition,
+  isBulkText,
   type Origin,
   originFromFlags,
-  type Span,
   SpanList,
 } from './provenance.js';
 import type { AnyRecord, FileSnapshotBody, SnapshotOrigin } from './records.js';
-import { contentHash, detectEol, normalizeText } from './text.js';
+import { RemovedHistory, type RemovedText } from './removed.js';
+import { contentHash, countNonWhitespace, detectEol, normalizeText } from './text.js';
 import { minimalEdits } from './textdiff.js';
 
 export type Severity = 'fail' | 'warn' | 'info';
@@ -65,18 +66,17 @@ export interface ReplaySnapshot {
   files: Array<{ f: number; path: string; text: string; spans?: SpanList }>;
   retired: number[];
   /** Recently removed text per file, for undo/redo provenance. */
-  removed?: Array<[number, Array<{ text: string; spans: Span[] }>]>;
+  removed?: Array<[number, RemovedText[]]>;
 }
 
 const DS_STATE_BYTES = ds(DS_STATE);
 
-/** Removed texts remembered per file for undo/redo provenance (spec §7.1). */
-export const REMOVED_HISTORY = 64;
-
-interface RemovedText {
-  text: string;
-  spans: Span[];
-}
+/**
+ * A rewrite of a region that really changed this many non-whitespace characters (and less than
+ * bulk) counts as a completion; less is typing, as editors that replace the whole file for
+ * every few characters typed produce (spec §7.1).
+ */
+export const REWRITE_COMPLETION_MIN_NON_WS = 8;
 
 const SNAPSHOT_PROVENANCE: Record<SnapshotOrigin, Origin> = {
   preexisting: 'preexisting',
@@ -108,7 +108,7 @@ export class Replayer {
   readonly retired = new Set<number>();
   private readonly pendingExternal = new Map<number, { h: Uint8Array; seq: number }>();
   /** Recently removed text per file with its origins (provenance only), for undo and redo. */
-  private readonly removed = new Map<number, RemovedText[]>();
+  private readonly removed = new Map<number, RemovedHistory>();
   private readonly provenance: boolean;
   private readonly onEdit: ((event: EditEvent) => void) | undefined;
   lastSeq = -1;
@@ -128,10 +128,7 @@ export class Replayer {
     for (const f of snapshot.retired) r.retired.add(f);
     if (r.provenance && snapshot.removed) {
       for (const [f, list] of snapshot.removed) {
-        r.removed.set(
-          f,
-          list.map((e) => ({ text: e.text, spans: e.spans.map((x) => ({ ...x })) })),
-        );
+        r.removed.set(f, RemovedHistory.from(list));
       }
     }
     r.lastSeq = snapshot.seq;
@@ -147,10 +144,8 @@ export class Replayer {
         return copy;
       }),
       retired: [...this.retired],
-      removed: [...this.removed].map(([f, list]) => [
-        f,
-        list.map((e) => ({ text: e.text, spans: e.spans.map((x) => ({ ...x })) })),
-      ]),
+      // Removed pieces are never changed after they are remembered, so they can be shared.
+      removed: [...this.removed].map(([f, history]) => [f, history.list()]),
     };
   }
 
@@ -220,16 +215,31 @@ export class Replayer {
         for (const [, off, del, ins, flags = 0] of rec.b.c) {
           let origin: Origin = 'typed';
           let source: string | undefined;
+          const deleted = tracking ? file.text.slice(off, off + del) : '';
           if (tracking) {
             if (ins.length > 0 && (flags & Flag.PASTE) !== 0) source = this.copySource(ins);
-            origin = originFromFlags(flags, source !== undefined, ins);
+            origin = originFromFlags(flags, source !== undefined, ins, deleted);
           }
           // A change that replaces text (an editor, tool or AI rewriting a whole region) only
           // re-attributes what really differs; unchanged code keeps its origin (spec §7.1).
           const parts =
             tracking && del > 0 && ins.length > 0
-              ? minimalEdits(file.text.slice(off, off + del), ins).map((e) => ({ ...e, off: off + e.off }))
+              ? minimalEdits(deleted, ins).map((e) => ({ ...e, off: off + e.off }))
               : [{ off, del, ins }];
+          // A rewrite of a region (not one word) is judged by what it really changed: some
+          // editors replace the whole file for every few characters typed.
+          if (
+            tracking &&
+            /\s/.test(deleted) &&
+            (origin === 'bulk' || origin === 'completion' || origin === 'typed')
+          ) {
+            const changed = parts.map((p) => p.ins).join('');
+            origin = isBulkText(changed)
+              ? 'bulk'
+              : countNonWhitespace(changed) >= REWRITE_COMPLETION_MIN_NON_WS
+                ? 'completion'
+                : 'typed';
+          }
           const undoRedo = (flags & (Flag.UNDO | Flag.REDO)) !== 0;
           for (const part of parts) {
             // Undo and redo bring back text with the origin it had when it was removed.
@@ -239,7 +249,7 @@ export class Replayer {
             if (file.spans) {
               if (part.del > 0) this.rememberRemoved(file, part.off, part.del);
               if (undoRedo && part.ins !== '') {
-                const restored = this.restoredSpans(file, part.ins);
+                const restored = this.removed.get(file.f)?.restore(part.ins, origin, rec.s);
                 if (restored) pieces = restored;
               }
               file.spans.remove(part.off, part.del);
@@ -370,40 +380,12 @@ export class Replayer {
   /** Remembers removed text with its origins, so a later undo or redo can restore them. */
   private rememberRemoved(file: FileState, off: number, len: number): void {
     if (!file.spans) return;
-    const list = this.removed.get(file.f) ?? [];
-    list.push({ text: file.text.slice(off, off + len), spans: file.spans.slice(off, len) });
-    if (list.length > REMOVED_HISTORY) list.shift();
-    this.removed.set(file.f, list);
-  }
-
-  /**
-   * The origins `text` had when it was last removed from the file, newest removal first. An undo
-   * may bring back only part of a removed piece (or the editor may split it differently), so a
-   * removed piece that contains `text` also counts.
-   */
-  private restoredSpans(
-    file: FileState,
-    text: string,
-  ): Array<{ text: string; origin: Origin; seq: number }> | undefined {
-    const list = this.removed.get(file.f);
-    if (!list) return undefined;
-    for (const exact of text.length >= 8 ? [true, false] : [true]) {
-      for (let i = list.length - 1; i >= 0; i--) {
-        const entry = list[i]!;
-        const at = exact ? (entry.text === text ? 0 : -1) : entry.text.indexOf(text);
-        if (at < 0) continue;
-        const out: Array<{ text: string; origin: Origin; seq: number }> = [];
-        let pos = 0;
-        for (const span of entry.spans) {
-          const from = Math.max(pos, at);
-          const to = Math.min(pos + span.len, at + text.length);
-          if (to > from) out.push({ text: entry.text.slice(from, to), origin: span.origin, seq: span.seq });
-          pos += span.len;
-        }
-        return out;
-      }
+    let history = this.removed.get(file.f);
+    if (!history) {
+      history = new RemovedHistory();
+      this.removed.set(file.f, history);
     }
-    return undefined;
+    history.add({ text: file.text.slice(off, off + len), spans: file.spans.slice(off, len) });
   }
 
   private addFile(f: number, path: string, text: string, origin: Origin, seq: number): void {

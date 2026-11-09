@@ -1,6 +1,6 @@
 /** The work the viewer does off the UI thread: read the log, build the model, verify. */
 import { createAnchorVerifier } from '@tap/anchor';
-import type { AnchorVerifier, SubmittedFile } from '@tap/core';
+import type { AnchorVerifier, AttachmentRef, SubmittedFile } from '@tap/core';
 import { LogLoader } from './model/load.js';
 import type { ViewData } from './model/types.js';
 import type { WorkerRequest, WorkerResponse } from './protocol.js';
@@ -9,6 +9,7 @@ export class Engine {
   private readonly loader = new LogLoader();
   private submission: SubmittedFile[] | undefined;
   private comparedWith: string | undefined;
+  private attachments: AttachmentRef[] | undefined;
   /** Checks timestamp tokens against the bundled TSA roots; caches results across refreshes. */
   private readonly verifier: AnchorVerifier;
 
@@ -22,6 +23,7 @@ export class Engine {
       if (req.type === 'load') {
         this.submission = req.submission;
         this.comparedWith = req.comparedWith;
+        this.attachments = req.attachments;
         this.loader.reset(req.bytes);
       } else if (req.type === 'append') {
         if (req.submission) {
@@ -42,7 +44,7 @@ export class Engine {
   view(): ViewData {
     const data: ViewData = {
       model: this.loader.model(),
-      report: this.loader.verify(this.submission, this.verifier),
+      report: this.loader.verify(this.submission, this.verifier, this.attachments),
     };
     if (this.comparedWith !== undefined) data.comparedWith = this.comparedWith;
     return data;

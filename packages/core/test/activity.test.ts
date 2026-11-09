@@ -191,6 +191,18 @@ describe('activity stage (0.3.3)', () => {
     expect(codeLinesOf('Run? [y/N]\nhello world').size).toBe(0);
   });
 
+  it('flags code arriving from outside the editor while AI was available (AI agents write files)', () => {
+    const log = base({ ai: ai(true), aiChoice: 'on' });
+    log.push('FILE_SNAPSHOT', snap(0, 'a.c', 'x\n'));
+    log.t += 60_000;
+    log.push('EXTERNAL_CHANGE', { f: 0, h: contentHash('bool isBST() {}\n') });
+    log.push('FILE_SNAPSHOT', snap(0, 'a.c', 'bool isBST() {}\n', 'external'));
+    const r = verifyLog(log.bytes());
+    expect(r.findings.find((f) => f.code === 'OUTSIDE_CHANGE_WHILE_AI')?.message).toMatch(
+      /a\.c \d\d:\d\d UTC/,
+    );
+  });
+
   it('links an outside change to the terminal command just before it (D9)', () => {
     const log = base();
     log.push('FILE_SNAPSHOT', snap(0, 'a.c', 'x\n'));
@@ -219,5 +231,61 @@ describe('clock set behind real time (B4)', () => {
     // Covered with real tokens in @tap/anchor's verifier tests; here only the constant is checked.
     const { CLOCK_BEHIND_MS } = await import('../src/verify.js');
     expect(CLOCK_BEHIND_MS).toBe(600_000);
+  });
+});
+
+describe('modes and files that are not code (0.3.4)', () => {
+  const h = (n: number) => new Uint8Array(32).fill(n);
+
+  it('reports the mode, a switch to practice, and images added, shown and deleted', () => {
+    const log = new RawLog({ tool: 'tap-cc-one/0.3.4' });
+    log.push('SESSION_START', {
+      ...sessionStart(key.publicKey),
+      ext: '0.3.4',
+      mode: 'exam',
+      assets: [{ p: 'lab.pdf', n: 2048, h: h(1), k: 'pdf' }],
+    });
+    log.t += 60_000;
+    log.push('ENV_CHANGE', { assets: [{ p: 'shot.png', n: 300_000, h: h(2), k: 'image', op: 'add' }] });
+    log.push('ENV_CHANGE', { open: [{ k: 'file', name: 'shot.png', vis: true, in: true }] });
+    log.t += 3 * 60_000;
+    log.push('ENV_CHANGE', { open: [] });
+    log.push('ENV_CHANGE', { mode: 'practice', aiChoice: 'on' });
+    log.push('ENV_CHANGE', { assets: [{ p: 'shot.png', n: 300_000, k: 'image', op: 'delete' }] });
+    log.push('SESSION_END', { sid: SID, reason: 'close' });
+    // Between sessions a PDF appears; the next session finds it.
+    log.t += 10 * 60_000;
+    log.push('SESSION_START', {
+      ...sessionStart(key.publicKey),
+      ext: '0.3.4',
+      mode: 'practice',
+      assets: [
+        { p: 'lab.pdf', n: 2048, h: h(1), k: 'pdf' },
+        { p: 'answer.pdf', n: 9000, h: h(3), k: 'pdf' },
+      ],
+    });
+    const r = verifyLog(log.bytes());
+    const found = r.findings.filter((f) => f.stage === 'activity').map((f) => `${f.severity}:${f.code}`);
+    expect(found).toEqual(
+      expect.arrayContaining([
+        'info:MODE_PRACTICE',
+        'warn:MODE_SWITCHED',
+        'info:ASSETS_PRESENT',
+        'warn:ASSET_ADDED',
+        'warn:ASSET_VIEWED',
+        'warn:ASSET_REMOVED',
+      ]),
+    );
+    expect(found).not.toContain('warn:OPEN_OUTSIDE_FOLDER');
+    const assets = r.activity!.assets;
+    expect(assets.map((a) => [a.p, a.initial, a.addedOffline ?? false, a.deleted !== undefined])).toEqual([
+      ['answer.pdf', false, true, false],
+      ['lab.pdf', true, false, false],
+      ['shot.png', false, false, true],
+    ]);
+    expect(Math.round(assets[2]!.visibleMs / 60_000)).toBe(3);
+    expect(r.findings.find((f) => f.message.includes('answer.pdf'))!.message).toMatch(
+      /while recording was off/,
+    );
   });
 });

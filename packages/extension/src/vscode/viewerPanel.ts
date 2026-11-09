@@ -6,7 +6,7 @@
 import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { SubmittedFile } from '@tap/core';
+import type { AttachmentRef, SubmittedFile } from '@tap/core';
 import * as vscode from 'vscode';
 import { COMPARED_WITH, workspaceFiles } from './workspaceFiles.js';
 
@@ -18,6 +18,8 @@ export interface FixedLog {
   bytes: Uint8Array;
   submission: SubmittedFile[];
   comparedWith: string;
+  /** A submission zip's attachments, by SHA-256 (0.3.4). */
+  attachments?: AttachmentRef[];
 }
 
 /** How often an open viewer checks the log for new records. */
@@ -182,6 +184,7 @@ export class ViewerPanel implements vscode.Disposable {
         title: this.fixed.title,
         submission: this.fixed.submission,
         comparedWith: this.fixed.comparedWith,
+        ...(this.fixed.attachments ? { attachments: this.fixed.attachments } : {}),
       });
       return;
     }

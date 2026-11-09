@@ -5,8 +5,9 @@
  * appeared in the code. None of this is a verdict: it points a human reviewer at what to check.
  */
 
+import { bytesEqual as bytesSame } from './bytes.js';
 import { Kind } from './constants.js';
-import type { AiChoice, AiState, AnyRecord, OpenItem } from './records.js';
+import type { AiChoice, AiState, AnyRecord, Asset, AssetKind, OpenItem, RecordingMode } from './records.js';
 
 export interface ActivityPeriod {
   from: number;
@@ -38,6 +39,34 @@ export interface TerminalReuse {
   foundAt: number;
 }
 
+/** A file in the folder that is not recorded as text: an image, a PDF... (0.3.4). */
+export interface AssetActivity {
+  p: string;
+  k: AssetKind;
+  n: number;
+  h?: Uint8Array;
+  /** When it appeared: during recording (op add), or between sessions (found at a session start). */
+  added?: number;
+  addedSeq?: number;
+  /** It appeared while recording was off. */
+  addedOffline?: boolean;
+  /** When it was deleted, if it was. */
+  deleted?: number;
+  /** Times its content changed during recording. */
+  changes: number;
+  /** Milliseconds it was shown in an editor tab. */
+  visibleMs: number;
+  /** It was already there when the first session started. */
+  initial: boolean;
+}
+
+export interface ModeSwitch {
+  t: number;
+  seq: number;
+  from: RecordingMode | undefined;
+  to: RecordingMode;
+}
+
 export interface SettingChange {
   t: number;
   seq: number;
@@ -63,6 +92,11 @@ export interface ActivitySummary {
   terminalWithOutput: number;
   terminalReuse: TerminalReuse[];
   settingsChanges: SettingChange[];
+  /** Recording mode of each session that had one (0.3.4). */
+  modes: RecordingMode[];
+  modeSwitches: ModeSwitch[];
+  /** Files in the folder that are not recorded as text (0.3.4). */
+  assets: AssetActivity[];
 }
 
 /** The recorder settings TAP ships with; anything weaker is reported. */
@@ -114,7 +148,7 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-const openKey = (o: OpenItem) => `${o.k}\u0000${o.name}`;
+const openKey = (o: OpenItem) => (o.in ? `in\u0000${o.name}` : `${o.k}\u0000${o.name}`);
 
 /** Activity from the records alone (terminal reuse is added by the verifier's replay). */
 export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummary {
@@ -131,6 +165,9 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
     terminalWithOutput: 0,
     terminalReuse: [],
     settingsChanges: [],
+    modes: [],
+    modeSwitches: [],
+    assets: [],
   };
   const end = records.length > 0 ? records[records.length - 1]!.t : 0;
 
@@ -189,6 +226,7 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
       }
     }
     // Terminals are reported through their commands; only other things count as "open outside".
+    // Files inside the folder that are not recorded as text count towards that file (0.3.4).
     const next = new Map(items.filter((o) => o.k !== 'terminal').map((o) => [openKey(o), o]));
     for (const key of [...current.keys()]) if (!next.has(key)) closeItem(key, t);
     for (const [key, item] of next) {
@@ -211,6 +249,47 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
     for (const key of [...current.keys()]) closeItem(key, t);
   };
 
+  // Files that are not recorded as text.
+  const assets = new Map<string, AssetActivity>();
+  let sessionIndex = 0;
+  const assetSeen = (a: Asset, t: number, seq: number, initialList: boolean) => {
+    const known = assets.get(a.p);
+    if (a.op === 'delete') {
+      if (known) known.deleted = t;
+      return;
+    }
+    if (!known) {
+      const entry: AssetActivity = { p: a.p, k: a.k, n: a.n, changes: 0, visibleMs: 0, initial: false };
+      if (a.h) entry.h = a.h;
+      if (initialList && sessionIndex === 1) entry.initial = true;
+      else {
+        entry.added = t;
+        entry.addedSeq = seq;
+        if (initialList) entry.addedOffline = true;
+      }
+      assets.set(a.p, entry);
+      return;
+    }
+    const changed = a.h && known.h ? !bytesSame(a.h, known.h) : a.n !== known.n;
+    if (known.deleted !== undefined) {
+      delete known.deleted;
+      known.added = t;
+      known.addedSeq = seq;
+      if (initialList) known.addedOffline = true;
+    } else if (changed) known.changes++;
+    known.n = a.n;
+    known.k = a.k;
+    if (a.h) known.h = a.h;
+  };
+  const sessionAssets = (list: readonly Asset[], t: number, seq: number) => {
+    const present = new Set(list.map((a) => a.p));
+    if (sessionIndex > 1) {
+      for (const a of assets.values()) if (a.deleted === undefined && !present.has(a.p)) a.deleted = t;
+    }
+    for (const a of list) assetSeen(a, t, seq, true);
+  };
+  let mode: RecordingMode | undefined;
+
   let settings: Record<string, unknown> = {};
   for (const rec of records) {
     switch (rec.k) {
@@ -219,6 +298,15 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
         closeAi(rec.t);
         closeAllOpen(rec.t);
         closeOff(rec.t);
+        sessionIndex++;
+        if (rec.b.mode) {
+          if (mode !== undefined && mode !== rec.b.mode) {
+            summary.modeSwitches.push({ t: rec.t, seq: rec.s, from: mode, to: rec.b.mode });
+          }
+          mode = rec.b.mode;
+          summary.modes.push(rec.b.mode);
+        }
+        if (rec.b.assets) sessionAssets(rec.b.assets, rec.t, rec.s);
         if (rec.b.aiChoice) {
           summary.aiChoices.push(rec.b.aiChoice);
           setChoice(rec.b.aiChoice, rec.t);
@@ -246,6 +334,13 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
         }
         setAi(rec.b.ai, rec.t);
         if (rec.b.open) setOpen(rec.b.open, rec.t);
+        if (rec.b.mode && rec.b.mode !== mode) {
+          summary.modeSwitches.push({ t: rec.t, seq: rec.s, from: mode, to: rec.b.mode });
+          mode = rec.b.mode;
+          if (summary.modes.length > 0) summary.modes[summary.modes.length - 1] = rec.b.mode;
+          else summary.modes.push(rec.b.mode);
+        }
+        if (rec.b.assets) for (const a of rec.b.assets) assetSeen(a, rec.t, rec.s, false);
         if (rec.b.settings) {
           for (const [key, to] of Object.entries(rec.b.settings)) {
             const from = settings[key];
@@ -275,7 +370,15 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
   closeOff(end);
   closeAllOpen(end);
   summary.awayMs = summary.away.reduce((n, p) => n + (p.to - p.from), 0);
+  // Files of the folder shown in a tab count towards that file, not as "outside".
+  for (const [key, tot] of totals) {
+    if (!key.startsWith('in\u0000')) continue;
+    totals.delete(key);
+    const a = assets.get(tot.name);
+    if (a) a.visibleMs += tot.visibleMs;
+  }
   summary.outside = [...totals.values()].sort((a, b) => b.visibleMs - a.visibleMs || b.openMs - a.openMs);
+  summary.assets = [...assets.values()].sort((a, b) => a.p.localeCompare(b.p));
   return summary;
 }
 

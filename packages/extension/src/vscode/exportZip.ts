@@ -21,9 +21,16 @@ export interface ExportInput {
   extensionVersion: string;
   log: Uint8Array;
   files: SubmittedFile[];
+  /** Files in the folder that are not code (images, PDFs...), shipped under attachments/ (0.3.4). */
+  attachments?: SubmittedFile[];
+  /** Ones too large to ship. */
+  skipped?: string[];
   report: VerifyReport;
   now: Date;
 }
+
+/** Folder in the zip holding the attachments. */
+export const ATTACHMENTS_DIR = 'attachments/';
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -63,6 +70,16 @@ export function howToVerify(input: ExportInput, logName: string): string {
     '  with its time, saves, runs, pastes, inserts by tools or AI, and changes made outside the editor.',
     '  It is hash-chained, signed, and timestamped by independent services.',
     `- ${input.files.length} code file(s), exactly as they were at export.`,
+    ...((input.attachments?.length ?? 0) > 0
+      ? [
+          `- ${ATTACHMENTS_DIR}: ${input.attachments!.length} other file(s) that were in the folder (images, PDFs,`,
+          '  documents...). The log recorded when each appeared; look at them: code can be read from a',
+          '  picture or a document and typed in.',
+        ]
+      : []),
+    ...((input.skipped?.length ?? 0) > 0
+      ? [`- Not included (too large): ${input.skipped!.slice(0, 10).join(', ')}`]
+      : []),
     '',
     'How to check it',
     '1. Install the TAP-CC-ONE extension in VS Code:',
@@ -93,6 +110,10 @@ export function buildSubmissionZip(input: ExportInput): { zip: Uint8Array; name:
     const content = typeof f.content === 'string' ? strToU8(f.content) : f.content;
     entries[f.path] = [content, { mtime }];
   }
+  for (const a of input.attachments ?? []) {
+    const content = typeof a.content === 'string' ? strToU8(a.content) : a.content;
+    entries[`${ATTACHMENTS_DIR}${a.path}`] = [content, { mtime }];
+  }
   entries[logName] = [input.log, { mtime, level: 0 }];
   entries[HOW_TO] = [strToU8(howToVerify(input, logName)), { mtime }];
   return { zip: zipSync(entries, { level: 6 }), name: `${base}.zip` };
@@ -102,6 +123,8 @@ export interface OpenedSubmission {
   log: Uint8Array;
   logName: string;
   files: SubmittedFile[];
+  /** The export's attachments/ folder (0.3.4). */
+  attachments: SubmittedFile[];
 }
 
 /** Reads a submission zip: the .codelog and the code next to it. */
@@ -126,13 +149,19 @@ export function readSubmissionZip(zip: Uint8Array): OpenedSubmission {
   const logDir = logName.includes('/') ? logName.slice(0, logName.lastIndexOf('/') + 1) : '';
   const prefix = inTap ? logDir.slice(0, -'.tap/'.length) : logDir;
   const files: SubmittedFile[] = [];
+  const attachments: SubmittedFile[] = [];
   for (const name of names) {
     if (name === logName || !name.startsWith(prefix)) continue;
     const rel = name.slice(prefix.length);
     if (rel === HOW_TO || rel.startsWith('.tap/') || rel.startsWith('__MACOSX/')) continue;
+    if (rel.startsWith(ATTACHMENTS_DIR)) {
+      const path = toLogPath(rel.slice(ATTACHMENTS_DIR.length));
+      if (isValidRelPath(path)) attachments.push({ path, content: entries[name]! });
+      continue;
+    }
     const path = toLogPath(rel);
     // Skip names that are not usable relative paths (absolute, "..", ...).
     if (isValidRelPath(path)) files.push({ path, content: entries[name]! });
   }
-  return { log: entries[logName]!, logName, files };
+  return { log: entries[logName]!, logName, files, attachments };
 }

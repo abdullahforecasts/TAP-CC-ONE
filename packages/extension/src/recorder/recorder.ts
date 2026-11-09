@@ -19,6 +19,7 @@ import {
   type AiChoice,
   type AiState,
   type AnchorBody,
+  type Asset,
   type BodyByKind,
   bytesEqual,
   type ChangeTuple,
@@ -31,6 +32,7 @@ import {
   LARGE_INSERT_THRESHOLD,
   type LogWriter,
   normalizeText,
+  type RecordingMode,
   type RecoveryBody,
   type SnapshotOrigin,
   toWellFormed,
@@ -92,6 +94,8 @@ export interface SessionEnvironment {
   ai?: AiState;
   editor?: Record<string, boolean | number | string>;
   policy?: Record<string, boolean | number | string>;
+  mode?: RecordingMode;
+  assets?: Asset[];
 }
 
 export interface RecorderSettings extends ClassifySettings {
@@ -360,6 +364,8 @@ export class Recorder {
         ...(env.ai ? { ai: env.ai } : {}),
         ...(env.editor ? { editor: env.editor } : {}),
         ...(env.policy ? { policy: env.policy } : {}),
+        ...(env.mode ? { mode: env.mode } : {}),
+        ...(env.assets ? { assets: env.assets } : {}),
       },
       time,
     );

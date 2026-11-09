@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as vscode from 'vscode';
 import { activate, deactivate } from '../src/extension.js';
 import type { Controller } from '../src/vscode/controller.js';
+import { readSubmissionZip } from '../src/vscode/exportZip.js';
 import { driver, type FakeContext, ui } from './support/fakeVscode.js';
 
 const fake = vscode as unknown as typeof import('./support/fakeVscode.js');
@@ -81,7 +82,7 @@ describe('extension activation', () => {
     expect(ui.messages[0]!.text).toMatch(/Record authorship history/);
     expect(ui.messages[0]!.items).toEqual(['Start', 'Not now', 'Never for this folder']);
     await until(() => status().visible);
-    expect(status().text).toBe('$(record) TAP');
+    expect(status().text).toBe('$(record) TAP · Practice');
     expect(fs.readFileSync(path.join(ws, '.tap', '.gitignore'), 'utf8')).toContain('lock');
     expect(JSON.parse(fs.readFileSync(path.join(ws, '.tap', 'config.json'), 'utf8')).include).toEqual([
       '**/*.{c,h,py,txt}',
@@ -186,11 +187,11 @@ describe('recording through VS Code events', () => {
 
     // Pause, change while paused, resume.
     await vscode.commands.executeCommand('tap.pause');
-    expect(status().text).toBe('$(debug-pause) TAP');
+    expect(status().text).toBe('$(debug-pause) TAP · Practice');
     driver.edit(doc, [{ rangeOffset: 0, rangeLength: 0, text: '/* paused */\n' }]);
     driver.save(doc);
     await vscode.commands.executeCommand('tap.resume');
-    expect(status().text).toBe('$(record) TAP');
+    expect(status().text).toBe('$(record) TAP · Practice');
     driver.type(doc, '// done\n');
     driver.save(doc);
 
@@ -262,7 +263,7 @@ describe('recording through VS Code events', () => {
     driver.reset();
     driver.addFolder(ws);
     const again = await start(context);
-    expect(status().text).toBe('$(debug-pause) TAP');
+    expect(status().text).toBe('$(debug-pause) TAP · Practice');
     const k = kinds(logBytes());
     expect(k.slice(-3)).toEqual(['SESSION_START', 'CHECKPOINT', 'PAUSE']);
     await vscode.commands.executeCommand('tap.resume');
@@ -452,7 +453,7 @@ describe('commands', () => {
     await vscode.commands.executeCommand('tap.addNote');
     ui.answers.push('Pause recording');
     await vscode.commands.executeCommand('tap.showMenu');
-    expect(status().text).toBe('$(debug-pause) TAP');
+    expect(status().text).toBe('$(debug-pause) TAP · Practice');
     ui.answers.push('Resume recording');
     await vscode.commands.executeCommand('tap.showMenu');
     ui.answers.push('nothing matches');
@@ -540,7 +541,7 @@ describe('timestamps, terminal commands, export and opening submissions', () => 
 
     await vscode.commands.executeCommand('tap.timestampNow');
     expect(ui.messages.at(-1)!.text).toMatch(/timestamped by 2 independent service/);
-    expect(status().text).toBe('$(record) TAP');
+    expect(status().text).toBe('$(record) TAP · Practice');
 
     const runs = readLog(logBytes())
       .records.map((r) => r.record)
@@ -642,29 +643,115 @@ describe('the bundled extension', () => {
   });
 });
 
-describe('0.3.3: AI choice, policy, outside files, open tabs and export checks', () => {
+describe('0.3.3/0.3.4: modes, policy, outside files, open tabs, attachments and export checks', () => {
   function records() {
     return readLog(logBytes()).records.map((r) => r.record);
   }
 
-  it('asks whether to turn AI off, applies the answer and records it', async () => {
+  it('asks for the mode (exam preselected), sets AI off even where only the user level allows it, and records a switch', async () => {
     fake.extensions.all = [{ id: 'GitHub.copilot', isActive: true }];
+    driver.configuration.set('tap.defaultMode', 'ask');
+    // Like the real editor for some AI settings: not settable per folder or workspace.
+    driver.settings.readOnlySettings.add('chat.disableAIFeatures');
     driver.addFolder(ws);
     await start();
-    ui.answers.push('Turn off AI');
+    ui.answers.push('Exam mode');
     await vscode.commands.executeCommand('tap.start');
-    await until(() => records().some((r) => r.k === Kind.ENV_CHANGE && r.b.aiChoice === 'off'));
-    expect(ui.messages.some((m) => /turn off AI features/.test(m.text))).toBe(true);
-    expect(driver.configuration.get('editor.inlineSuggest.enabled')).toBe(false);
+    await until(() => fs.existsSync(path.join(ws, '.tap', 'log.codelog')));
+    const first = records().find((r) => r.k === Kind.SESSION_START)!;
+    if (first.k !== Kind.SESSION_START) throw new Error('no session');
+    expect(first.b.mode).toBe('exam');
+    expect(first.b.aiChoice).toBe('off');
+    expect(first.b.ai?.on).toBe(false);
     expect(driver.configuration.get('chat.disableAIFeatures')).toBe(true);
-    const start0 = records().find((r) => r.k === Kind.SESSION_START)!;
-    expect(start0.k === Kind.SESSION_START && start0.b.aiChoice).toBe('unanswered');
-    expect(start0.k === Kind.SESSION_START && start0.b.ai?.on).toBe(true);
-    // The AI state change is recorded too.
-    await until(() => records().some((r) => r.k === Kind.ENV_CHANGE && r.b.ai?.on === false));
+    expect(driver.configuration.get('editor.inlineSuggest.enabled')).toBe(false);
+    expect(driver.configuration.get('editor.wordBasedSuggestions')).toBe('off');
+    expect(
+      driver.settings.writes.find((w) => w.key === 'chat.disableAIFeatures' && w.value === true)?.target,
+    ).toBe(fake.ConfigurationTarget.Global);
+    expect(status().text).toBe('$(record) TAP · Exam');
+    // Exam mode locks the TAP settings: a weaker value is ignored and that is recorded.
+    expect(first.b.settings?.['tap.anchoring.enabled']).toBe(true);
+    expect(String(first.b.settings?.['tap.ignored'])).toMatch(/anchoring\.enabled=false/);
+
+    // Switching to practice mode puts the settings back and is written in the log.
+    ui.answers.push('Practice mode', 'Switch to practice mode');
+    await vscode.commands.executeCommand('tap.chooseMode');
+    await until(() => records().some((r) => r.k === Kind.ENV_CHANGE && r.b.mode === 'practice'));
+    expect(driver.configuration.get('chat.disableAIFeatures')).toBeUndefined();
+    expect(driver.configuration.get('editor.inlineSuggest.enabled')).toBeUndefined();
+    expect(status().text).toBe('$(record) TAP · Practice');
+    await until(() => records().some((r) => r.k === Kind.ENV_CHANGE && r.b.ai?.on === true));
+    const findings = verifyLog(logBytes()).findings.filter((f) => f.stage === 'activity');
+    expect(findings.find((f) => f.code === 'MODE_SWITCHED')?.severity).toBe('warn');
+    expect(findings.map((f) => f.code)).toContain('MODE_PRACTICE');
+  });
+
+  it('dismissing the mode question records in exam mode; the menu shows the mode', async () => {
+    driver.configuration.set('tap.defaultMode', 'ask');
+    driver.addFolder(ws);
+    await start();
+    ui.answers.push(undefined);
+    await vscode.commands.executeCommand('tap.start');
+    await until(() => fs.existsSync(path.join(ws, '.tap', 'log.codelog')));
+    const first = records().find((r) => r.k === Kind.SESSION_START)!;
+    expect(first.k === Kind.SESSION_START && first.b.mode).toBe('exam');
+    expect(verifyLog(logBytes()).findings.map((f) => f.code)).toContain('MODE_EXAM');
+  });
+
+  it('records images and PDFs in the folder, when they are shown, and ships them in the export', async () => {
+    const folder = driver.addFolder(ws);
+    const { controller } = await start();
+    await vscode.commands.executeCommand('tap.start');
+    await until(() => fs.existsSync(path.join(ws, '.tap', 'log.codelog')));
+    const first = records().find((r) => r.k === Kind.SESSION_START)!;
+    expect(first.k === Kind.SESSION_START && first.b.assets?.map((a) => [a.p, a.k])).toEqual([
+      ['README.png', 'image'],
+    ]);
+    // A screenshot of code is saved into the folder and opened in VS Code.
+    const shot = path.join(ws, 'shots', 'code.png');
+    fs.mkdirSync(path.dirname(shot));
+    fs.writeFileSync(shot, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]));
+    for (const w of driver.watchers) w.create.fire(fake.Uri.file(shot));
+    await until(() =>
+      records().some((r) => r.k === Kind.ENV_CHANGE && r.b.assets?.some((a) => a.p === 'shots/code.png')),
+    );
+    fake.window.tabGroups.all = [
+      { tabs: [{ label: 'code.png', isActive: true, input: new fake.TabInputCustom(fake.Uri.file(shot)) }] },
+    ];
+    driver.emitters.tabs.fire();
+    await until(() =>
+      records().some(
+        (r) => r.k === Kind.ENV_CHANGE && r.b.open?.some((o) => o.in && o.name === 'shots/code.png'),
+      ),
+    );
     const report = verifyLog(logBytes());
-    expect(report.findings.map((f) => f.code)).toContain('AI_DECLARED_OFF');
-    expect(report.findings.map((f) => f.code)).not.toContain('AI_ON_AFTER_DECLARED_OFF');
+    const added = report.findings.find((f) => f.code === 'ASSET_ADDED')!;
+    expect(added.severity).toBe('warn');
+    expect(added.message).toMatch(/image "shots\/code\.png"/);
+    expect(report.findings.map((f) => f.code)).not.toContain('OPEN_OUTSIDE_FOLDER');
+
+    // The export ships it under attachments/, and opening the zip checks it against the log.
+    const exported = await controller.exportFolder(folder as unknown as vscode.WorkspaceFolder);
+    const opened = readSubmissionZip(exported.zip);
+    expect(opened.attachments.map((a) => a.path).sort()).toEqual(['README.png', 'shots/code.png']);
+    expect(opened.files.map((f) => f.path)).toEqual(['main.c']);
+    const check = verifyLog(opened.log, { submission: opened.files, attachments: opened.attachments });
+    expect(check.findings.filter((f) => f.code.startsWith('ATTACHMENT_'))).toEqual([]);
+    const swapped = verifyLog(opened.log, {
+      submission: opened.files,
+      attachments: [{ path: 'shots/code.png', content: new Uint8Array([1, 2, 3]) }],
+    });
+    expect(swapped.findings.map((f) => f.code)).toContain('ATTACHMENT_MISMATCH');
+    expect(swapped.findings.map((f) => f.code)).toContain('ATTACHMENT_NOT_SHIPPED');
+
+    // Deleting it is recorded too.
+    fs.rmSync(shot);
+    for (const w of driver.watchers) w.delete.fire(fake.Uri.file(shot));
+    await until(() =>
+      records().some((r) => r.k === Kind.ENV_CHANGE && r.b.assets?.some((a) => a.op === 'delete')),
+    );
+    expect(verifyLog(logBytes()).findings.map((f) => f.code)).toContain('ASSET_REMOVED');
   });
 
   it('a course policy turns AI and suggestions off without asking', async () => {

@@ -415,7 +415,9 @@ describe('provenance', () => {
   it('derives origin from flags with documented precedence', () => {
     expect(originFromFlags(0, false)).toBe('typed');
     expect(originFromFlags(Flag.MULTI_CURSOR, false)).toBe('typed');
-    expect(originFromFlags(Flag.BULK, false)).toBe('bulk');
+    // The recorder's BULK flag is not used: the text decides (spec §7.1).
+    expect(originFromFlags(Flag.BULK, false, 'a')).toBe('typed');
+    expect(originFromFlags(Flag.BULK, false, 'x'.repeat(40))).toBe('bulk');
     expect(originFromFlags(Flag.PASTE, false)).toBe('paste');
     expect(originFromFlags(Flag.PASTE, true)).toBe('internal-copy');
     expect(originFromFlags(Flag.PASTE | Flag.FORMAT_ON_SAVE, false)).toBe('format');
@@ -553,10 +555,11 @@ describe('provenance of replacements, undo and redo (spec §7.1)', () => {
       // Copilot-style apply: the whole document replaced by the old text plus one line.
       w.append('EDIT_BATCH', { f: 0, c: [[0, 0, typed.length, withLine, Flag.BULK]] }, T);
     });
-    // Only the new line (aligned after the shared indentation) is the tool's.
+    // Only the new line (aligned after the shared indentation) is the tool's: one short line
+    // from a rewrite counts as a completion.
     expect(spansOf(records)).toEqual([
       ['typed', 17],
-      ['bulk', 15],
+      ['completion', 15],
       ['typed', withLine.length - 32],
     ]);
   });
@@ -599,9 +602,9 @@ describe('provenance of replacements, undo and redo (spec §7.1)', () => {
     const records = recordsOf((w) => {
       w.append('FILE_SNAPSHOT', snap(0, 'a.cpp', '', 'created' as never), T);
       w.append('EDIT_BATCH', { f: 0, c: [[0, 0, 0, 'a']] }, T);
-      w.append('EDIT_BATCH', { f: 0, c: [[1, 0, 0, 'a', Flag.BULK]] }, T);
-      w.append('EDIT_BATCH', { f: 0, c: [[2, 0, 1, '']] }, T);
-      w.append('EDIT_BATCH', { f: 0, c: [[3, 0, 0, 'a', Flag.UNDO]] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: [[1, 0, 0, 'b'.repeat(40)]] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: [[2, 0, 40, '']] }, T);
+      w.append('EDIT_BATCH', { f: 0, c: [[3, 0, 0, 'b'.repeat(40), Flag.UNDO]] }, T);
     });
     const events: EditEvent[] = [];
     const r = new Replayer({ provenance: true, onEdit: (e) => events.push(e) });

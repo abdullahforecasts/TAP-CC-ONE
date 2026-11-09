@@ -127,6 +127,7 @@ export function onHostMessage(msg: HostMessage): void {
       const req: WorkerRequest = { type: 'load', bytes: msg.bytes };
       if (msg.submission) req.submission = msg.submission;
       if (msg.comparedWith !== undefined) req.comparedWith = msg.comparedWith;
+      if (msg.attachments) req.attachments = msg.attachments;
       status.value = { state: 'loading' };
       send(req);
       break;

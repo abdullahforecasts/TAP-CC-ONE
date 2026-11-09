@@ -472,10 +472,10 @@ describe('undo and redo in the replay', () => {
 
     const frame = frameAt(track, track.events.length);
     expect(frame.text).toBe('// x\nint a;\nint b = f();\n');
-    // The restored line keeps its tool/AI colour...
+    // The restored line keeps its colour (inserted by the editor)...
     expect(frame.spans.map((s) => [s.origin, s.len])).toEqual([
       ['typed', 12],
-      ['bulk', 13],
+      ['completion', 13],
     ]);
     // ...and is marked as brought back by undo, wherever it moved to.
     expect(frame.undo.map((s) => [s.origin, s.len])).toEqual([

@@ -1,5 +1,5 @@
 /** Messages between the extension host (or a test page) and the viewer, and the viewer's worker. */
-import type { SubmittedFile } from '@tap/core';
+import type { AttachmentRef, SubmittedFile } from '@tap/core';
 import type { ViewData } from './model/types.js';
 
 /** Host → viewer. */
@@ -12,6 +12,8 @@ export type HostMessage =
       submission?: SubmittedFile[];
       /** Describes the submission, e.g. "the files in this folder". */
       comparedWith?: string;
+      /** A submission's attachments (images, PDFs...), by hash (0.3.4). */
+      attachments?: AttachmentRef[];
     }
   | {
       type: 'append';
@@ -37,7 +39,13 @@ export type ViewerMessage =
 
 /** Viewer → worker. */
 export type WorkerRequest =
-  | { type: 'load'; bytes: Uint8Array; submission?: SubmittedFile[]; comparedWith?: string }
+  | {
+      type: 'load';
+      bytes: Uint8Array;
+      submission?: SubmittedFile[];
+      comparedWith?: string;
+      attachments?: AttachmentRef[];
+    }
   | { type: 'append'; bytes: Uint8Array; submission?: SubmittedFile[]; comparedWith?: string }
   | { type: 'submission'; submission: SubmittedFile[]; comparedWith: string };
 

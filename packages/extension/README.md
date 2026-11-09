@@ -4,15 +4,15 @@ Records a tamper-evident history of how your code was written, so you can show t
 
 **Author:** Abdullah Nawaz · **License:** PolyForm Noncommercial 1.0.0 (commercial use by agreement) · **Source:** [github.com/abdullahforecasts/TAP-CC-ONE](https://github.com/abdullahforecasts/TAP-CC-ONE)
 
-> Status: 0.3.3, development build (Part 4 of the plan, with the fixes from the first classroom test). The teacher's batch checker arrives in the next release.
+> Status: 0.3.4, development build (Part 4 of the plan, with the fixes from the first classroom test). The teacher's batch checker arrives in the next release.
 
 ## How it works
 
-1. Open a folder with code. The extension asks: **Record authorship history for this folder?** Choose **Start**. It then asks whether to turn off AI features (inline suggestions and AI chat) while recording; your answer is written in the log.
+1. Open a folder with code. The extension asks: **Record authorship history for this folder?** Choose **Start**. The first time, it asks for the mode: **Exam mode** (preselected: AI features and code suggestions off, TAP settings locked) or **Practice mode** (nothing changed; the log records when AI was available). The mode is written in the log and shown in the status bar (`● TAP · Exam`).
 2. Code as usual. The status bar shows `● TAP` while recording.
 3. Everything is written to `.tap/log.codelog` in your folder: what you typed, pasted, undid, saved and ran, with timing. The file is binary and every record is linked to the previous one by a hash chain, and signed checkpoints are written every few minutes, so any later edit to the file is detectable.
 4. Every 10 minutes while you work, and whenever you pause, stop or export, the newest checkpoint is timestamped by independent services (see below), which proves the work existed at that time.
-5. When you are done, run **TAP: Export for Submission**. It saves one `.zip` with your code, the log and a `HOW-TO-VERIFY.txt` for the reader. Submit that zip.
+5. When you are done, run **TAP: Export for Submission**. It saves one `.zip` with your code, the log, any images, PDFs and other files from the folder (under `attachments/`) and a `HOW-TO-VERIFY.txt` for the reader. Submit that zip.
 
 Click `TAP` in the status bar for the log viewer, pause, resume, notes, verification and your key fingerprint.
 
@@ -51,6 +51,7 @@ Turning timestamps off (`tap.anchoring.enabled`) is allowed but is shown to the 
 | Saves, file creation, renames and deletions | Absolute paths, your user name, your computer's name |
 | Changes made to files by other programs (as snapshots) | Other programs, browser tabs, websites you visit |
 | The names of files, web pages and terminals open in VS Code outside the folder | Their contents and full paths |
+| Images, PDFs and other files in the folder that are not code: name, size, SHA-256, when they were added, changed, deleted or shown | Their content (it goes into the export's `attachments/` instead) |
 | Debug sessions and tasks you run, with exit codes | Anything you type into a running program |
 | Commands you run in VS Code's terminal (full command line, passwords and tokens masked), with exit codes and output (at most 64 000 characters per command) | |
 | Timestamp tokens from the services above | |
@@ -75,6 +76,7 @@ Turning timestamps off (`tap.anchoring.enabled`) is allowed but is shown to the 
 | TAP: Timestamp Now | Timestamps the newest checkpoint right away |
 | TAP: Export for Submission | Saves a `.zip` with the code, the log and `HOW-TO-VERIFY.txt` |
 | TAP: Open Log File or Submission... | Opens an exported `.zip` or a `.codelog` read-only in the viewer |
+| TAP: Choose Recording Mode (Exam / Practice) | Switches the mode; the switch is written in the log |
 
 ## Settings
 
@@ -92,10 +94,15 @@ Turning timestamps off (`tap.anchoring.enabled`) is allowed but is shown to the 
 | `tap.anchoring.intervalSec` | `600` | How often the newest checkpoint is timestamped while you work (120–900) |
 | `tap.anchoring.tsa` / `tap.anchoring.ots` | FreeTSA, DigiCert, Sectigo / three public calendars | Which services to use |
 | `tap.checkForUpdates` | `true` | Check once a day for a newer release |
+| `tap.defaultMode` | `ask` | Mode for a folder recorded for the first time: `ask`, `exam` or `practice` |
 
 The settings in effect are written in the log when recording starts, and every change is recorded. Values outside the ranges above are ignored, and the attempt is recorded.
 
-### Exam mode (for teachers)
+### Modes
+
+**Exam mode** (the default) writes these settings for the folder: AI features off (`chat.disableAIFeatures`, inline suggestions, Copilot), word, snippet and tab-completion suggestions off, terminal shell integration on. Some editors accept the AI setting only in the user settings; TAP then sets it there and puts it back when recording stops. The TAP settings are locked to their defaults. **Practice mode** puts back what exam mode changed. Whatever the mode, the log records when AI was actually available.
+
+### Teacher policy
 
 Start recording the starter folder once so `.tap/config.json` is created, stop, add a `policy` to that file, and hand the folder out (without `.tap/log.codelog`):
 
@@ -105,7 +112,7 @@ Start recording the starter folder once so `.tap/config.json` is created, stop, 
 
 | Key | Values | |
 |---|---|---|
-| `ai` | `ask` (default), `off`, `on` | `off` turns AI features off without asking; `on` does not ask |
+| `ai` | `ask` (default), `off`, `on` | `off`: exam mode (AI features off); otherwise practice mode. Students cannot switch the mode of a folder with a policy |
 | `suggestions` | `on` (default), `off` | `off` turns word-based, snippet and tab-completion suggestions off for the folder |
 | `lockSettings` | `false` (default), `true` | The recorder ignores the student's TAP settings and uses the defaults |
 | `requireShellIntegration` | `false` (default), `true` | Turns terminal shell integration on so commands and output can be recorded |

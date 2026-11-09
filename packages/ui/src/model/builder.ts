@@ -95,6 +95,8 @@ export class LogModelBuilder {
   private openAi: Range | undefined;
   /** Things open outside the folder (kind + name → shown). */
   private outside = new Map<string, boolean>();
+  /** Files that are not code, by path (size), as last recorded. */
+  private readonly assets = new Map<string, number>();
   private readonly unmonitored = new Set<string>();
   private readonly sessionRanges: Range[] = [];
   private openPause: Range | undefined;
@@ -183,6 +185,7 @@ export class LogModelBuilder {
           key: keyFingerprint(b.pub),
         };
         if (b.aiChoice) session.aiChoice = b.aiChoice;
+        if (b.mode) session.mode = b.mode;
         if (b.policy) {
           const policy: Record<string, string | number | boolean> = {};
           for (const [k, v] of Object.entries(b.policy)) {
@@ -192,6 +195,37 @@ export class LogModelBuilder {
         }
         this.sessions.push(session);
         this.outside = new Map();
+        if (b.mode) {
+          this.event(rec, 'environment', MODE_TEXT[b.mode] ?? `${b.mode} mode`, {
+            tone: b.mode === 'practice' ? 'notice' : 'normal',
+          });
+        }
+        if (b.assets) {
+          const present = new Set(b.assets.map((a) => a.p));
+          if (this.sessions.length > 1) {
+            for (const p of this.assets.keys()) {
+              if (!present.has(p)) {
+                this.event(rec, 'environment', `Gone from the folder (deleted while not recording): "${p}"`);
+                this.assets.delete(p);
+              }
+            }
+          }
+          for (const a of b.assets) {
+            const known = this.assets.get(a.p);
+            if (this.sessions.length > 1 && known === undefined) {
+              this.event(
+                rec,
+                'environment',
+                `Found in the folder (added while not recording): ${ASSET_KIND[a.k] ?? 'file'} "${a.p}"`,
+                {
+                  detail: fmtSize(a.n),
+                  tone: READABLE.has(a.k) ? 'notice' : 'normal',
+                },
+              );
+            }
+            this.assets.set(a.p, a.n);
+          }
+        }
         if (b.ai) this.setAi(b.ai.on, rec);
         if (b.aiChoice && b.aiChoice !== 'unanswered') {
           this.event(rec, 'environment', AI_CHOICE_TEXT[b.aiChoice] ?? `AI choice: ${b.aiChoice}`, {
@@ -428,6 +462,35 @@ export class LogModelBuilder {
         if (b.vsc) parts.push(`editor ${b.vsc}`);
         if (parts.length > 0)
           this.event(rec, 'session', 'Environment changed', { detail: parts.join(' · ') });
+        if (b.mode) {
+          const session = this.sessions.at(-1);
+          if (session) session.mode = b.mode;
+          this.event(rec, 'environment', `Switched to ${b.mode} mode`, {
+            tone: b.mode === 'practice' ? 'notice' : 'normal',
+          });
+        }
+        if (b.assets) {
+          for (const a of b.assets) {
+            const what = `${ASSET_KIND[a.k] ?? 'file'} "${a.p}"`;
+            if (a.op === 'delete') {
+              this.assets.delete(a.p);
+              this.event(rec, 'environment', `Deleted from the folder: ${what}`, {
+                tone: READABLE.has(a.k) ? 'notice' : 'normal',
+              });
+            } else {
+              this.assets.set(a.p, a.n);
+              this.event(
+                rec,
+                'environment',
+                `${a.op === 'change' ? 'Changed in' : 'Added to'} the folder: ${what}`,
+                {
+                  detail: `${fmtSize(a.n)} · not code, so not recorded as text`,
+                  tone: READABLE.has(a.k) ? 'notice' : 'normal',
+                },
+              );
+            }
+          }
+        }
         if (b.aiChoice) {
           const session = this.sessions.at(-1);
           if (session) session.aiChoice = b.aiChoice;
@@ -477,7 +540,7 @@ export class LogModelBuilder {
         }
         if (b.open) {
           const next = new Map<string, (typeof b.open)[number]>(
-            b.open.map((o) => [`${o.k}\u0000${o.name}`, o]),
+            b.open.map((o) => [`${o.in ? 'in' : o.k}\u0000${o.name}`, o]),
           );
           for (const [key, o] of next) {
             if (o.k === 'terminal' && o.mon === false && !this.unmonitored.has(o.name)) {
@@ -493,9 +556,11 @@ export class LogModelBuilder {
               this.event(
                 rec,
                 'environment',
-                `Opened outside the recorded folder: ${OPEN_KIND[o.k] ?? o.k} "${o.name}"`,
+                o.in
+                  ? `Opened in VS Code: "${o.name}" (in the folder, not code)`
+                  : `Opened outside the recorded folder: ${OPEN_KIND[o.k] ?? o.k} "${o.name}"`,
                 {
-                  tone: o.k === 'web' || o.k === 'file' || o.k === 'notebook' ? 'notice' : 'normal',
+                  tone: o.in || o.k === 'web' || o.k === 'file' || o.k === 'notebook' ? 'notice' : 'normal',
                 },
               );
             }
@@ -503,7 +568,11 @@ export class LogModelBuilder {
           for (const key of this.outside.keys()) {
             if (!next.has(key)) {
               const [k, name] = key.split('\u0000') as [string, string];
-              this.event(rec, 'environment', `Closed: ${OPEN_KIND[k] ?? k} "${name}"`);
+              this.event(
+                rec,
+                'environment',
+                k === 'in' ? `Closed: "${name}"` : `Closed: ${OPEN_KIND[k] ?? k} "${name}"`,
+              );
             }
           }
           this.outside = new Map(
@@ -822,6 +891,29 @@ const AI_CHOICE_TEXT: Record<string, string> = {
   on: 'The student chose to keep AI features on',
   'enforced-off': 'AI features turned off by the course policy',
 };
+
+const MODE_TEXT: Record<string, string> = {
+  exam: 'Exam mode: AI features and suggestions off, TAP settings locked',
+  practice: 'Practice mode: AI features and suggestions allowed (and recorded)',
+};
+
+const ASSET_KIND: Record<string, string> = {
+  image: 'image',
+  pdf: 'PDF',
+  document: 'document',
+  archive: 'archive',
+  media: 'audio/video file',
+  other: 'file',
+};
+
+/** Kinds a person can read code from. */
+const READABLE = new Set(['image', 'pdf', 'document']);
+
+function fmtSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
 
 const OPEN_KIND: Record<string, string> = {
   file: 'file',

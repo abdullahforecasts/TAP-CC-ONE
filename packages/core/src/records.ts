@@ -52,7 +52,28 @@ export interface SessionStartBody {
   editor?: { [key: string]: CborValue };
   /** Teacher policy from .tap/config.json. */
   policy?: { [key: string]: CborValue };
+  /** Recording mode (0.3.4): exam turns AI and suggestions off and locks TAP settings. */
+  mode?: RecordingMode;
+  /** Files in the folder that are not recorded as text (images, PDFs...) when the session starts. */
+  assets?: Asset[];
 }
+
+export type RecordingMode = 'exam' | 'practice';
+
+/** A file in the recorded folder that is not recorded as text: an image, a PDF... (0.3.4). */
+export interface Asset {
+  /** Folder-relative path. */
+  p: string;
+  /** Size in bytes. */
+  n: number;
+  /** SHA-256 of the content (absent for files too large to hash). */
+  h?: Uint8Array;
+  k: AssetKind;
+  /** ENV_CHANGE only: what happened to it. */
+  op?: 'add' | 'change' | 'delete';
+}
+
+export type AssetKind = 'image' | 'pdf' | 'document' | 'archive' | 'media' | 'other';
 
 /** Whether AI assistance could insert or show code (design §6.1, 0.3.3). */
 export interface AiState {
@@ -77,6 +98,8 @@ export interface OpenItem {
   vis?: boolean;
   /** Terminals: whether its commands can be recorded (shell integration). */
   mon?: boolean;
+  /** Inside the recorded folder but not recorded as text (an image, a PDF...; 0.3.4). */
+  in?: boolean;
 }
 
 export interface SessionEndBody {
@@ -178,6 +201,9 @@ export interface EnvChangeBody {
   editor?: { [key: string]: CborValue };
   /** Everything open that is not part of the recorded folder (full list, replaces the last). */
   open?: OpenItem[];
+  mode?: RecordingMode;
+  /** Files that are not recorded as text, added, changed or deleted (0.3.4). */
+  assets?: Asset[];
 }
 
 export interface BodyByKind {
@@ -288,6 +314,22 @@ const openItem: Check = (v, p) => {
   if (name) return `name: ${name}`;
   if (v.vis !== undefined && bool(v.vis, p)) return 'vis: expected boolean';
   if (v.mon !== undefined && bool(v.mon, p)) return 'mon: expected boolean';
+  if (v.in !== undefined && bool(v.in, p)) return 'in: expected boolean';
+  return undefined;
+};
+const recordingMode = oneOf('exam', 'practice');
+const asset: Check = (v, p) => {
+  if (!isObj(v)) return 'expected map';
+  const path = relPath(v.p, p);
+  if (path) return `p: ${path}`;
+  if (uint(v.n, p)) return 'n: expected unsigned integer';
+  if (v.h !== undefined && bstr(32)(v.h, p)) return 'h: expected 32 bytes';
+  const kind = oneOf('image', 'pdf', 'document', 'archive', 'media', 'other')(v.k, p);
+  if (kind) return `k: ${kind}`;
+  if (v.op !== undefined) {
+    const op = oneOf('add', 'change', 'delete')(v.op, p);
+    if (op) return `op: ${op}`;
+  }
   return undefined;
 };
 
@@ -347,6 +389,8 @@ const BODY_SPECS: Record<KindName, Spec> = {
     ai: opt(aiState),
     editor: opt(map),
     policy: opt(map),
+    mode: opt(recordingMode),
+    assets: opt(arrayOf(asset)),
   },
   SESSION_END: { sid: req(bstr(16)), reason: req(oneOf('close', 'reload', 'deactivate')) },
   FILE_SNAPSHOT: {
@@ -411,6 +455,8 @@ const BODY_SPECS: Record<KindName, Spec> = {
     ai: opt(aiState),
     editor: opt(map),
     open: opt(arrayOf(openItem)),
+    mode: opt(recordingMode),
+    assets: opt(arrayOf(asset)),
   },
 };
 

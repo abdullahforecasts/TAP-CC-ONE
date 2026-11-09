@@ -16,13 +16,18 @@ import {
 } from '@tap/anchor';
 import { nodeHttpClient } from '@tap/anchor/node';
 import {
+  type AiChoice,
   type AnchorVerifier,
+  type Asset,
+  type AttachmentRef,
   compareVersions,
   type KeyPair,
   keyFingerprint,
+  type RecordingMode,
   Replayer,
   readLog,
   type SubmittedFile,
+  sha256,
   type VerifyReport,
   verifyLog,
 } from '@tap/core';
@@ -33,17 +38,18 @@ import {
   DEFAULT_CALENDARS,
   DEFAULT_TSAS,
 } from '../anchoring/anchorService.js';
+import { ASSET_HASH_MAX, scanAssets } from '../storage/assets.js';
 import {
   createConfig,
   createMatcher,
-  DEFAULT_POLICY,
+  type FolderPolicy,
   hasConfig,
   loadConfig,
 } from '../storage/folderConfig.js';
 import { loadOrCreateKey } from '../storage/keystore.js';
 import { walkFiles } from '../storage/walk.js';
 import { buildSubmissionZip, readSubmissionZip } from './exportZip.js';
-import { FolderSession, type SessionStatus } from './folderSession.js';
+import { FolderSession, type SessionStatus, type SettingWrite } from './folderSession.js';
 import { ViewerPanel } from './viewerPanel.js';
 import { workspaceFiles } from './workspaceFiles.js';
 
@@ -53,6 +59,12 @@ const PAUSED_KEY = 'tap.paused';
 const KEY_NOTICE_KEY = 'tap.keyFileNoticeShown';
 /** Folder → the student's answer to "turn off AI features while recording?" (G4). */
 const AI_CHOICE_KEY = 'tap.aiChoice';
+/** Recording mode chosen per folder (0.3.4). */
+const MODE_KEY = 'tap.mode';
+/** Settings exam mode changed per folder, with the values they replaced. */
+const WRITES_KEY = 'tap.settingWrites';
+/** At most this much of images, PDFs... goes into an export. */
+const EXPORT_ATTACHMENTS_MAX = 50 * 1024 * 1024;
 const UPDATE_CHECK_KEY = 'tap.lastUpdateCheck';
 const RELEASES_API = 'https://api.github.com/repos/abdullahforecasts/TAP-CC-ONE/releases/latest';
 const RELEASES_PAGE = 'https://github.com/abdullahforecasts/TAP-CC-ONE/releases/latest';
@@ -130,6 +142,7 @@ export class Controller implements vscode.Disposable {
     const reg = (id: string, fn: (...args: unknown[]) => unknown) =>
       this.disposables.push(vscode.commands.registerCommand(id, fn));
     reg('tap.start', () => this.cmdStart());
+    reg('tap.chooseMode', () => this.cmdChooseMode());
     reg('tap.stop', () => this.cmdStop());
     reg('tap.pause', () => this.cmdPause());
     reg('tap.resume', () => this.cmdResume());
@@ -375,6 +388,19 @@ export class Controller implements vscode.Disposable {
       globalStorage: this.context.globalStorageUri.fsPath,
       log: this.log,
       anchors: this.anchors,
+      rememberWrite: (w) => {
+        const all = this.context.workspaceState.get<Record<string, SettingWrite[]>>(WRITES_KEY) ?? {};
+        const list = (all[id] ?? []).filter(
+          (x) => !(x.section === w.section && x.key === w.key && x.target === w.target),
+        );
+        void this.context.workspaceState.update(WRITES_KEY, { ...all, [id]: [...list, w] });
+      },
+      takeWrites: () => {
+        const all = this.context.workspaceState.get<Record<string, SettingWrite[]>>(WRITES_KEY) ?? {};
+        const list = all[id] ?? [];
+        void this.context.workspaceState.update(WRITES_KEY, { ...all, [id]: [] });
+        return list;
+      },
       onStatusChange: () => {
         this.updateStatus();
         // Remember pause across window reloads; stopping (including on reload) does not clear it.
@@ -384,20 +410,26 @@ export class Controller implements vscode.Disposable {
       },
     });
     this.sessions.set(id, session);
-    let policyAi = DEFAULT_POLICY.ai;
+    let teacher: FolderPolicy | undefined;
     try {
-      policyAi = loadConfig(folder.uri.fsPath).config.policy?.ai ?? DEFAULT_POLICY.ai;
+      teacher = loadConfig(folder.uri.fsPath).config.policy;
     } catch {
       // start() reports a broken config
     }
-    const choices = this.context.workspaceState.get<Record<string, string>>(AI_CHOICE_KEY) ?? {};
-    const stored = choices[id] as 'off' | 'on' | undefined;
-    const aiChoice =
-      policyAi === 'off' ? 'enforced-off' : policyAi === 'on' ? 'on' : (stored ?? 'unanswered');
-    await session.start({ paused: this.hasFolderFlag(PAUSED_KEY, folder), aiChoice });
-    if (session.status === 'recording' || session.status === 'paused') {
-      if (aiChoice === 'off') void session.turnAiOff();
-      if (aiChoice === 'unanswered') void this.askAiChoice(folder, session);
+    const mode = teacher ? (teacher.ai === 'off' ? 'exam' : 'practice') : await this.modeFor(folder);
+    const aiChoice: AiChoice = teacher
+      ? teacher.ai === 'off'
+        ? 'enforced-off'
+        : teacher.ai === 'on'
+          ? 'on'
+          : 'unanswered'
+      : mode === 'exam'
+        ? 'off'
+        : 'on';
+    await session.start({ paused: this.hasFolderFlag(PAUSED_KEY, folder), aiChoice, mode });
+    if ((session.status === 'recording' || session.status === 'paused') && mode === 'exam') {
+      // Some AI settings take a moment to apply: check that AI really is off.
+      setTimeout(() => void this.warnIfAiStillOn(folder, session), 3000);
     }
     if (session.logIdHex) {
       const map = this.context.globalState.get<Record<string, string>>('tap.logIds') ?? {};
@@ -415,20 +447,96 @@ export class Controller implements vscode.Disposable {
     return session;
   }
 
-  /** Asks whether to turn AI features off while recording, and records the answer (G4). */
-  private async askAiChoice(folder: vscode.WorkspaceFolder, session: FolderSession): Promise<void> {
-    const answer = await vscode.window.showInformationMessage(
-      `TAP-CC-ONE: turn off AI features (inline suggestions and AI chat) for "${folder.name}" while it is recorded? Your answer is written in the log, and the log also records whether AI was actually on or off.`,
-      'Turn off AI',
-      'Keep AI on',
-    );
-    if (!answer) return; // stays "unanswered" in the log
-    const choice = answer === 'Turn off AI' ? 'off' : 'on';
+  /**
+   * The folder's recording mode: the one chosen before, else asked once (0.3.4). Exam mode is the
+   * default and is used when the question is dismissed.
+   */
+  private async modeFor(folder: vscode.WorkspaceFolder): Promise<RecordingMode> {
     const id = folder.uri.toString();
-    const choices = this.context.workspaceState.get<Record<string, string>>(AI_CHOICE_KEY) ?? {};
-    await this.context.workspaceState.update(AI_CHOICE_KEY, { ...choices, [id]: choice });
-    if (choice === 'off') await session.turnAiOff();
-    session.recordAiChoice(choice);
+    const modes = this.context.workspaceState.get<Record<string, RecordingMode>>(MODE_KEY) ?? {};
+    if (modes[id]) return modes[id];
+    // 0.3.3 asked about AI instead: keep that answer.
+    const old = this.context.workspaceState.get<Record<string, string>>(AI_CHOICE_KEY)?.[id];
+    const preset = vscode.workspace.getConfiguration('tap', folder.uri).get<string>('defaultMode', 'ask');
+    let mode: RecordingMode;
+    if (old === 'on' || old === 'off') mode = old === 'on' ? 'practice' : 'exam';
+    else if (preset === 'exam' || preset === 'practice') mode = preset;
+    else mode = (await this.askMode(folder.name, 'exam')) ?? 'exam';
+    await this.context.workspaceState.update(MODE_KEY, { ...modes, [id]: mode });
+    return mode;
+  }
+
+  private async askMode(name: string, current: RecordingMode): Promise<RecordingMode | undefined> {
+    type Item = vscode.QuickPickItem & { mode: RecordingMode };
+    const items: Item[] = [
+      {
+        mode: 'exam',
+        label: `$(mortar-board) Exam mode${current === 'exam' ? ' (current)' : ''}`,
+        description: 'recommended',
+        detail:
+          'AI features and code suggestions are turned off for this folder and the TAP settings are locked.',
+      },
+      {
+        mode: 'practice',
+        label: `$(beaker) Practice mode${current === 'practice' ? ' (current)' : ''}`,
+        detail: 'AI features and suggestions stay as they are. The log records when AI was available.',
+      },
+    ];
+    const pick = await vscode.window.showQuickPick(items, {
+      title: `TAP-CC-ONE: how should "${name}" be recorded?`,
+      placeHolder: 'The mode is written in the log. You can switch later from the TAP status bar menu.',
+      ignoreFocusOut: true,
+    });
+    return pick?.mode;
+  }
+
+  /** Exam mode: tells the student when AI features are still on and how to turn them off. */
+  private async warnIfAiStillOn(folder: vscode.WorkspaceFolder, session: FolderSession): Promise<void> {
+    if (session.status !== 'recording' && session.status !== 'paused') return;
+    if (!session.aiStillOn()) return;
+    const open = 'Open AI settings';
+    const answer = await vscode.window.showWarningMessage(
+      `TAP-CC-ONE: exam mode could not turn off every AI feature for "${folder.name}". The log records that AI was available. Turn off "Disable AI Features" (chat.disableAIFeatures) and any AI extension.`,
+      open,
+    );
+    if (answer === open) {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'disableAIFeatures');
+    }
+  }
+
+  /** Switches a recorded folder between exam and practice mode (0.3.4). */
+  private async cmdChooseMode(): Promise<void> {
+    const folder = await this.pickFolder(
+      (s) => s?.status === 'recording' || s?.status === 'paused',
+      'Change the mode of which folder?',
+    );
+    const session = folder ? this.session(folder) : undefined;
+    if (!folder || !session) {
+      void vscode.window.showInformationMessage('TAP-CC-ONE: no folder is being recorded.');
+      return;
+    }
+    if (session.modeLocked) {
+      void vscode.window.showInformationMessage(
+        `TAP-CC-ONE: the mode of "${folder.name}" is set by the teacher (.tap/config.json) and cannot be changed.`,
+      );
+      return;
+    }
+    const mode = await this.askMode(folder.name, session.mode);
+    if (!mode || mode === session.mode) return;
+    if (mode === 'practice') {
+      const ok = await vscode.window.showWarningMessage(
+        `Switch "${folder.name}" to practice mode? AI features and suggestions will be allowed again. The switch is written in the log.`,
+        { modal: true },
+        'Switch to practice mode',
+      );
+      if (!ok) return;
+    }
+    await session.setMode(mode);
+    const id = folder.uri.toString();
+    const modes = this.context.workspaceState.get<Record<string, RecordingMode>>(MODE_KEY) ?? {};
+    await this.context.workspaceState.update(MODE_KEY, { ...modes, [id]: mode });
+    this.updateStatus();
+    if (mode === 'exam') setTimeout(() => void this.warnIfAiStillOn(folder, session), 3000);
   }
 
   private async rememberPaused(folder: vscode.WorkspaceFolder, paused: boolean): Promise<void> {
@@ -474,9 +582,10 @@ export class Controller implements vscode.Disposable {
       this.status.hide();
       return;
     }
+    const active = sessions.filter((s) => s.status === 'recording' || s.status === 'paused');
     const lines = sessions.map(
       (s) =>
-        `${s.name}: ${describe(s.status)}${s.detail && (s.status === 'error' || s.status === 'read-only') ? ` (${s.detail})` : ''}`,
+        `${s.name}: ${describe(s.status)}${s.status === 'recording' || s.status === 'paused' ? `, ${s.mode} mode${s.modeLocked ? ' (set by the teacher)' : ''}` : ''}${s.detail && (s.status === 'error' || s.status === 'read-only') ? ` (${s.detail})` : ''}`,
     );
     let text: string;
     let background: vscode.ThemeColor | undefined;
@@ -490,6 +599,8 @@ export class Controller implements vscode.Disposable {
     } else {
       text = '$(circle-slash) TAP';
     }
+    const modes = new Set(active.map((s) => s.mode));
+    if (modes.size === 1) text += modes.has('exam') ? ' · Exam' : ' · Practice';
     const waiting = sessions.reduce((n, s) => n + (s.logIdHex ? this.anchors.outstanding(s.logIdHex) : 0), 0);
     if (waiting > 0) {
       text += ` ⧗${waiting}`;
@@ -722,16 +833,53 @@ export class Controller implements vscode.Disposable {
     const logPath = path.join(folder.uri.fsPath, '.tap', 'log.codelog');
     const log = new Uint8Array(fs.readFileSync(logPath));
     const files = await workspaceFiles(folder.uri.fsPath);
-    const report = verifyLog(log, { submission: files, anchorVerifier: this.anchorVerifier() });
+    const { attachments, skipped } = this.attachmentsOf(folder, session);
+    const report = verifyLog(log, { submission: files, attachments, anchorVerifier: this.anchorVerifier() });
     const { zip, name } = buildSubmissionZip({
       folderName: folder.name,
       extensionVersion: this.version,
       log,
       files,
+      attachments,
+      skipped,
       report,
       now: new Date(),
     });
     return { zip, name, report };
+  }
+
+  /** Images, PDFs and other files that are not code, to ship with the export (0.3.4). */
+  private attachmentsOf(
+    folder: vscode.WorkspaceFolder,
+    session: FolderSession | undefined,
+  ): { attachments: SubmittedFile[]; skipped: string[] } {
+    const root = folder.uri.fsPath;
+    let assets: Asset[] = session?.currentAssets() ?? [];
+    if (!session || (session.status !== 'recording' && session.status !== 'paused')) {
+      try {
+        const matcher = createMatcher(loadConfig(root).config);
+        assets = scanAssets(root, (rel) => matcher(rel));
+      } catch {
+        assets = [];
+      }
+    }
+    const attachments: SubmittedFile[] = [];
+    const skipped: string[] = [];
+    let total = 0;
+    for (const a of assets) {
+      if (a.n > ASSET_HASH_MAX || total + a.n > EXPORT_ATTACHMENTS_MAX) {
+        skipped.push(a.p);
+        continue;
+      }
+      try {
+        const content = new Uint8Array(fs.readFileSync(path.join(root, ...a.p.split('/'))));
+        attachments.push({ path: a.p, content });
+        total += content.length;
+      } catch {
+        skipped.push(a.p);
+      }
+    }
+    return { attachments, skipped };
   }
 
   private async cmdExport(): Promise<void> {
@@ -833,11 +981,16 @@ export class Controller implements vscode.Disposable {
       let log: Uint8Array;
       let submission: SubmittedFile[];
       let comparedWith: string;
+      let attachments: AttachmentRef[] | undefined;
       if (name.toLowerCase().endsWith('.zip')) {
         const opened = readSubmissionZip(bytes);
         log = opened.log;
         submission = opened.files;
         comparedWith = 'the code in the zip';
+        attachments = opened.attachments.map((a) => ({
+          path: a.path,
+          sha256: sha256(typeof a.content === 'string' ? new TextEncoder().encode(a.content) : a.content),
+        }));
       } else {
         log = bytes;
         const dir = path.dirname(file.fsPath);
@@ -851,6 +1004,7 @@ export class Controller implements vscode.Disposable {
           bytes: log,
           submission,
           comparedWith,
+          ...(attachments ? { attachments } : {}),
         },
         { extensionUri: this.context.extensionUri, log: this.log, flush: async () => {} },
       );
@@ -873,6 +1027,11 @@ export class Controller implements vscode.Disposable {
       items.push({ label: '$(debug-stop) Stop recording', command: 'tap.stop' });
     }
     if (any('recording') || any('paused')) {
+      const current = sessions.find((s) => s.status === 'recording' || s.status === 'paused');
+      items.push({
+        label: `$(mortar-board) Mode: ${current?.mode === 'practice' ? 'Practice' : 'Exam'}${current?.modeLocked ? ' (set by the teacher)' : ' — change…'}`,
+        command: 'tap.chooseMode',
+      });
       items.push({ label: '$(package) Export for submission (zip)', command: 'tap.export' });
       items.push({ label: '$(watch) Timestamp now', command: 'tap.timestampNow' });
     }

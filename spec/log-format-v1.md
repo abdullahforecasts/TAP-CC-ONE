@@ -119,7 +119,7 @@ Field types are given in `schema-v1.cddl`. Summary:
 
 | Code | Kind | Body |
 |---|---|---|
-| 1 | SESSION_START | `sid` bstr16, `pub` bstr32 (Ed25519 public key), `vsc`, `app`, `os`, `ext` tstr, `aiExt` [tstr], `liveShare` bool, `cfgHash` bstr32, `settings`? map, `aiChoice`? ∈ off, on, unanswered, enforced-off, `ai`? AiState, `editor`? map, `policy`? map |
+| 1 | SESSION_START | `sid` bstr16, `pub` bstr32 (Ed25519 public key), `vsc`, `app`, `os`, `ext` tstr, `aiExt` [tstr], `liveShare` bool, `cfgHash` bstr32, `settings`? map, `aiChoice`? ∈ off, on, unanswered, enforced-off, `ai`? AiState, `editor`? map, `policy`? map, `mode`? ∈ exam, practice, `assets`? [Asset] |
 | 2 | SESSION_END | `sid`, `reason` ∈ close, reload, deactivate |
 | 3 | FILE_SNAPSHOT | `f` uint, `path`, `origin`, `text` tstr, `h` bstr32, `eol` ∈ lf, crlf, `enc` tstr |
 | 4 | EDIT_BATCH | `f`, `c`: one or more change tuples (§5.4) |
@@ -137,7 +137,7 @@ Field types are given in `schema-v1.cddl`. Summary:
 | 16 | NOTE | `text`: 1 to 2000 code points |
 | 17 | KEY_ROTATION | `oldPub`? bstr32, `newPub` bstr32, `why` ∈ lost, manual |
 | 18 | CLOCK_ANOMALY | `wallDelta` int, `monoDelta` uint |
-| 19 | ENV_CHANGE | any of `vsc`, `aiExt`, `liveShare`, `cfgHash`, `settings`, `aiChoice`, `ai` AiState, `editor` map, `open` [OpenItem] (the full list of things open outside the recorded folder; replaces the previous list) |
+| 19 | ENV_CHANGE | any of `vsc`, `aiExt`, `liveShare`, `cfgHash`, `settings`, `aiChoice`, `ai` AiState, `editor` map, `open` [OpenItem] (the full list of things open outside the recorded folder; replaces the previous list), `mode`, `assets` [Asset] (with `op`) |
 
 Snapshot `origin` ∈ preexisting, created, external, resync, paused-gap, periodic.
 
@@ -147,7 +147,13 @@ The optional fields added in revision 1.1 (recorder 0.3.3) are:
 - **OpenItem** = map `{ k ∈ file, untitled, web, notebook, terminal, other, name: tstr ≤ 300, vis?: bool, mon?: bool }`: something open in the window that is not a file of the recorded folder. `name` is a file's base name or a tab or terminal label, never a full path; `vis` means shown in an editor group; `mon` (terminals) says whether its commands can be recorded.
 - `editor`: suggestion settings and counts of user snippets and keybindings that type text (no content). `policy`: the teacher's policy from `.tap/config.json`. `aiChoice`: the student's answer to "turn off AI features while recording?" (`enforced-off` when the policy decided).
 
-Older verifiers ignore these fields (§5.2), so revision 1.1 logs remain format version 1.
+Revision 1.2 (recorder 0.3.4) adds:
+
+- `mode`: the recording mode. `exam` turns AI features and code suggestions off for the folder and locks the TAP settings; `practice` changes nothing. ENV_CHANGE `mode` records a switch.
+- **Asset** = map `{ p: path, n: uint, h?: bstr32, k ∈ image, pdf, document, archive, media, other, op? ∈ add, change, delete }`: a file in the recorded folder that is not recorded as text (an image, a PDF, a document, an archive, audio or video, or a small text file outside the include patterns). `h` is its SHA-256 (absent above 25 MiB). SESSION_START `assets` lists those present when the session starts (at most 500); ENV_CHANGE `assets` lists changes, with `op`.
+- OpenItem `in?: bool`: the item is a file inside the recorded folder that is not recorded as text; `name` is then its folder-relative path.
+
+Older verifiers ignore these fields (§5.2), so revision 1.1 and 1.2 logs remain format version 1.
 
 ### 5.4 Change tuples
 
@@ -266,7 +272,7 @@ A snapshot that changes a live file's text is reported as: `external` → EXTERN
 
 ### 7.1 Provenance (informative)
 
-Verifiers SHOULD track the origin of every UTF-16 unit of each file: `typed`, `paste`, `internal-copy`, `bulk`, `completion`, `format`, `undo-redo` (from change flags and text, in that precedence order: undo/redo, format, paste, bulk, completion, typed), and `preexisting`, `created`, `external`, `resync`, `paused-gap` (from snapshots). Since revision 1.1, bulk and completion are decided from the inserted text as well as the flags, so recorder settings cannot hide them: a change without PASTE, UNDO, REDO or FORMAT_ON_SAVE whose inserted text is at least 40 UTF-16 units long, or contains a line break and is at least 20 long, is `bulk`; otherwise, one that inserts at least 3 non-whitespace characters is `completion` (typing inserts one character per change, plus auto-closed pairs and indentation). A paste whose EOL-normalised, non-blank text already occurs in a live file is `internal-copy`. When a change or a snapshot replaces text, only what differs gets the new origin: the deleted and inserted texts (for a snapshot, the old and new file) are reduced by `minimalEdits` — strip the longest common prefix and suffix, diff the remaining lines with Myers' algorithm (at most 1000 line edits and 20000 lines per side, otherwise the remainder is one edit), and strip each differing run's own common prefix and suffix — and only those edits take the change's or snapshot's origin; the rest keeps its origin. Text inserted by an undo or redo change that equals text removed earlier from the same file (the newest of the last 64 removals per file), or is contained in such a removal when at least 8 units long, regains the origins it had when removed; otherwise it is `undo-redo`. Text replaced by a snapshot counts as removed, so undoing a change made outside the editor brings back the outside origin. Provenance never affects the verdict.
+Verifiers SHOULD track the origin of every UTF-16 unit of each file: `typed`, `paste`, `internal-copy`, `bulk`, `completion`, `format`, `undo-redo` (from change flags and text, in that precedence order: undo/redo, format, paste, bulk, completion, typed), and `preexisting`, `created`, `external`, `resync`, `paused-gap` (from snapshots). Since revision 1.2, the BULK flag is not used: a change without UNDO, REDO, FORMAT_ON_SAVE or PASTE is classified from its text, so recorder settings cannot change the result. It is `bulk` when the inserted text is at least 40 UTF-16 units long, or contains a line break and is at least 20 long; otherwise `completion` when it inserts at least 3 non-whitespace characters and the text it replaced contains no whitespace (inserted at the cursor, or in place of one word, as a suggestion widget does); otherwise `typed`. A change whose replaced text contains whitespace rewrites a region (some editors replace the whole file for every few characters typed): it is judged by what it really changed, the concatenated inserted texts of its `minimalEdits` parts: `bulk` by the rule above, `completion` with at least 8 non-whitespace characters, otherwise `typed`. A paste whose EOL-normalised, non-blank text already occurs in a live file is `internal-copy`. When a change or a snapshot replaces text, only what differs gets the new origin: the deleted and inserted texts (for a snapshot, the old and new file) are reduced by `minimalEdits` — strip the longest common prefix and suffix, diff the remaining lines with Myers' algorithm (at most 1000 line edits and 20000 lines per side, otherwise the remainder is one edit), and strip each differing run's own common prefix and suffix — and only those edits take the change's or snapshot's origin; the rest keeps its origin. Text inserted by an undo or redo change regains the origins it had when it was removed from the same file: the newest remembered removal equal to it; else the newest containing it, when at least 8 units long; else line by line, each line of at least 8 non-surrounding-whitespace units found in a remembered removal keeping its origins. What is not found is `undo-redo`. Verifiers remember removals per file up to 512 KiB of removed text and 4096 removals (revision 1.2; revision 1.1 kept the last 64 removals). Text replaced by a snapshot counts as removed, so undoing a change made outside the editor brings back the outside origin. Provenance never affects the verdict.
 
 ## 8. Recovery
 
@@ -311,6 +317,7 @@ Stages, in order:
    - TERMINAL_NOT_MONITORED (warn): an `open` terminal with `mon` false. TERMINAL_OUTSIDE_FOLDER (info): RUN_START records with `outside`.
    - TERMINAL_CODE_REUSED (warn): code lines of a terminal command's output (whitespace removed, at least 10 characters, containing one of `;{}()=<>[]`) that were not in the files when the command ended and are present in them at a later CHECKPOINT or SAVE within 90 minutes: at least 3 lines and at least 30 % of the output's code lines.
    - BROAD_FOLDER (info): more than 50 live files at the end.
+   - Revision 1.2: MODE_EXAM / MODE_PRACTICE (info) from the last `mode`; MODE_SWITCHED (warn to practice, else info). OUTSIDE_CHANGE_WHILE_AI (warn): external snapshots (not within 5 s of a SESSION_START, not under `.vscode/`) while AI was available. ASSETS_PRESENT (info): assets in the first session's list. ASSET_ADDED: an asset added during recording, or new in a later session's list (added while not recording); warn for image, pdf and document. ASSET_VIEWED (warn): an image, PDF or document shown in an editor (OpenItem with `in`) for a minute or more. ASSET_REMOVED: deleted before the end (warn for image, pdf, document). With a submission's attachments: ATTACHMENT_MISMATCH (warn, hash differs), ATTACHMENT_NOT_IN_LOG (warn), ATTACHMENT_NOT_SHIPPED (info).
    In stage 5, an EXTERNAL_CHANGE or EXTERNAL_FILE finding within 120 s after a terminal RUN_START names that command.
 
 Resource limits: at most 10 000 000 records and 50 000 live files.
@@ -338,5 +345,8 @@ The chain detects any change to a record that has a later record linking to it. 
 | Token parsing library | PKI.js | a small DER reader and synchronous signature checks | Keeps the viewer bundle small and the verifier synchronous; interoperability is tested against OpenSSL-made tokens. |
 | Inserts without flags | `typed` | `completion` (3+ non-whitespace characters) or `bulk` (40+ characters), decided from the text (revision 1.1) | Field test EVAL-02: accepted suggestions and settings that raised the bulk threshold made editor inserts look typed. |
 | Undo after an outside change | `undo-redo` | the outside origin (revision 1.1) | An undo in the editor hid code that had arrived from another program. |
+| BULK flag | honoured | ignored; the text decides (revision 1.2) | Field test: an editor that rewrites the whole file per keystroke made typing look like a tool insert. |
+| Undo history | — | 512 KiB per file, line-by-line restore (revision 1.2) | BSCS25040: an undo after many small edits lost the outside origin of the code it brought back. |
+| Files that are not code | not recorded | `assets` (revision 1.2) | A screenshot of code saved in the folder was not visible in the log. |
 | Activity | not specified | stage 7, revision 1.1 | AI choice and availability, time away, things open outside the folder, terminal output reused in the code. |
 | Late anchors | not specified | a checkpoint written while offline is anchored when the network returns, possibly in a later session; ANCHORED_LATE is informational | Students work offline; the anchor still bounds everything before the checkpoint. |

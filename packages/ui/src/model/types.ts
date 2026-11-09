@@ -151,6 +151,8 @@ export interface SessionInfo {
   aiChoice?: string;
   /** The teacher's policy from .tap/config.json, if any. */
   policy?: Record<string, string | number | boolean>;
+  /** Recording mode (recorder 0.3.4+): exam or practice; the last one when it was switched. */
+  mode?: string;
 }
 
 /** One minute of activity, for the timeline's typing lane. */

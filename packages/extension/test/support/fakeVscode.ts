@@ -231,6 +231,11 @@ class FileSystemWatcher extends Disposable {
 const watchers = new Set<FileSystemWatcher>();
 
 const configuration = new Map<string, unknown>();
+/** Settings writes made by the extension, and settings that can only be written at user level. */
+const fake = {
+  writes: [] as Array<{ key: string; value: unknown; target: ConfigurationTarget | undefined }>,
+  readOnlySettings: new Set<string>(),
+};
 
 export const workspace = {
   workspaceFolders: [] as WorkspaceFolder[] | undefined,
@@ -273,9 +278,18 @@ export const workspace = {
         const full = `${section}.${key}`;
         return (configuration.has(full) ? configuration.get(full) : fallback) as T;
       },
-      async update(key: string, value: unknown): Promise<void> {
+      inspect(key: string) {
         const full = `${section}.${key}`;
-        configuration.set(full, value);
+        return { key: full, workspaceFolderValue: configuration.get(full) };
+      },
+      async update(key: string, value: unknown, target?: ConfigurationTarget): Promise<void> {
+        const full = `${section}.${key}`;
+        if (fake.readOnlySettings.has(full) && target !== ConfigurationTarget.Global) {
+          throw new Error(`Unable to write ${full}: it does not support this scope`);
+        }
+        if (value === undefined) configuration.delete(full);
+        else configuration.set(full, value);
+        fake.writes.push({ key: full, value, target });
         emitters.configuration.fire({ affectsConfiguration: (s: string) => full.startsWith(s) });
       },
     };
@@ -535,6 +549,7 @@ export const driver = {
   emitters,
   watchers,
   configuration,
+  settings: fake,
 
   reset(): void {
     workspace.workspaceFolders = [];
@@ -547,8 +562,12 @@ export const driver = {
     ui.files.length = 0;
     ui.dialogs.length = 0;
     configuration.clear();
+    fake.writes.length = 0;
+    fake.readOnlySettings.clear();
     // Tests never ask GitHub for releases.
     configuration.set('tap.checkForUpdates', false);
+    // Tests that are not about modes record in practice mode (nothing forced, no question).
+    configuration.set('tap.defaultMode', 'practice');
     commandRegistry.clear();
     extensions.all = [];
     window.activeTextEditor = undefined;
@@ -578,7 +597,7 @@ export const driver = {
           secretStore.set(k, v);
         },
       },
-      extension: { packageJSON: { version: '0.3.3' } },
+      extension: { packageJSON: { version: '0.3.4' } },
     };
   },
 

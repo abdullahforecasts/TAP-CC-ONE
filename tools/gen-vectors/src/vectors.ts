@@ -251,7 +251,7 @@ export const VECTORS: VectorDef[] = [
       const pasted = '    return sum(range(n))\n';
       s.edit(0, [[1500, 'def solve(n):\n'.length, 0, pasted, Flag.PASTE]]);
       const afterPaste = 'def solve(n):\n'.length + pasted.length;
-      const bulk = 'print(solve(10))\n';
+      const bulk = 'print(solve(10))  # inserted by a completion tool\n';
       s.edit(0, [[900, afterPaste, 0, bulk, Flag.BULK]]);
       // Typo then undo: type "x", undo it.
       const end = afterPaste + bulk.length;
@@ -272,7 +272,7 @@ export const VECTORS: VectorDef[] = [
       const o = r.composition!.byOrigin;
       assert(o.typed?.chars === 'def solve(n):\n'.length, 'typed region');
       assert(o.paste?.chars === '    return sum(range(n))\n'.length, 'external paste region');
-      assert(o.bulk?.chars === 'print(solve(10))\n'.length, 'bulk region');
+      assert(o.bulk?.chars === 'print(solve(10))  # inserted by a completion tool\n'.length, 'bulk region');
       assert(o.format?.chars === 1, 'format-on-save newline');
       assert(o['undo-redo'] === undefined, 'undo removed text, nothing remains attributed to it');
     },

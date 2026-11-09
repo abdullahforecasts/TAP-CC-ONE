@@ -24,6 +24,8 @@ async function main(): Promise<void> {
         // No requests to real timestamp services from CI (scripts/record-real.ts covers them).
         'tap.anchoring.enabled': false,
         'tap.checkForUpdates': false,
+        // No mode question in the automated run (it would wait for an answer).
+        'tap.defaultMode': 'practice',
         'files.trimTrailingWhitespace': true,
         'files.autoSave': 'off',
         'editor.formatOnPaste': false,

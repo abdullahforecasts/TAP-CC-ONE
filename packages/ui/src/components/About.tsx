@@ -47,6 +47,9 @@ export function About({ data }: { data: ViewData }) {
       <h3>AI features</h3>
       <AiSummary data={data} />
 
+      <h3>Files in the folder that are not code</h3>
+      <AssetList data={data} />
+
       <h3>Settings that weaken the evidence</h3>
       {model.weakenings.length === 0 ? (
         <p>None: the recorder used its default settings.</p>
@@ -169,6 +172,7 @@ function AiSummary({ data }: { data: ViewData }) {
   const { model } = data;
   const last = model.sessions.at(-1);
   const choice = [...model.sessions].reverse().find((s) => s.aiChoice)?.aiChoice;
+  const mode = [...model.sessions].reverse().find((s) => s.mode)?.mode;
   const ranges = model.timeline.aiOn ?? [];
   const onMs = ranges.reduce((n, r) => n + (r.to - r.from), 0);
   if (!choice && ranges.length === 0) {
@@ -176,6 +180,11 @@ function AiSummary({ data }: { data: ViewData }) {
   }
   return (
     <ul>
+      {mode && (
+        <li>
+          Mode: {mode === 'exam' ? 'exam (AI features and suggestions turned off)' : 'practice (AI allowed)'}
+        </li>
+      )}
       {choice && <li>Declared: {CHOICE_TEXT[choice] ?? choice}</li>}
       <li>
         Actually available: {onMs > 0 ? `${fmtDuration(onMs)} in ${ranges.length} period(s)` : 'never'}
@@ -192,5 +201,56 @@ function AiSummary({ data }: { data: ViewData }) {
         </li>
       )}
     </ul>
+  );
+}
+
+const ASSET_TEXT: Record<string, string> = {
+  image: 'image',
+  pdf: 'PDF',
+  document: 'document',
+  archive: 'archive',
+  media: 'audio/video',
+  other: 'other',
+};
+
+function AssetList({ data }: { data: ViewData }) {
+  const assets = data.report.activity?.assets ?? [];
+  if (assets.length === 0) {
+    return (
+      <p class="muted">
+        None recorded (logs from TAP-CC-ONE 0.3.4 and later list images, PDFs and other files).
+      </p>
+    );
+  }
+  return (
+    <table class="assets">
+      <thead>
+        <tr>
+          <th>File</th>
+          <th>Kind</th>
+          <th>Size</th>
+          <th>When</th>
+          <th>Shown in VS Code</th>
+        </tr>
+      </thead>
+      <tbody>
+        {assets.map((a) => (
+          <tr key={a.p}>
+            <td>{a.p}</td>
+            <td>{ASSET_TEXT[a.k] ?? a.k}</td>
+            <td>{fmtBytes(a.n)}</td>
+            <td>
+              {a.initial
+                ? 'there from the start'
+                : a.added !== undefined
+                  ? `added ${fmtDateTime(a.added)}${a.addedOffline ? ' (while not recording)' : ''}`
+                  : ''}
+              {a.deleted !== undefined ? `, deleted ${fmtDateTime(a.deleted)}` : ''}
+            </td>
+            <td>{a.visibleMs > 0 ? fmtDuration(a.visibleMs) : ''}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

@@ -3,7 +3,7 @@
   "displayName": "TAP-CC-ONE: Code Authorship Log",
   "description": "Records a tamper-evident history of how your code was written, so you can prove your work is your own.",
   "icon": "icon.png",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "publisher": "abdullahforecasts",
   "author": "Abdullah Nawaz",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -100,6 +100,12 @@
         "title": "Show Recording Menu",
         "category": "TAP",
         "icon": "$(list-unordered)"
+      },
+      {
+        "command": "tap.chooseMode",
+        "title": "Choose Recording Mode (Exam / Practice)",
+        "category": "TAP",
+        "icon": "$(mortar-board)"
       },
       {
         "command": "tap.timestampNow",
@@ -259,6 +265,21 @@
           "type": "boolean",
           "default": true,
           "description": "Check once a day whether a newer TAP-CC-ONE release is available (asks GitHub for the latest release number; nothing about your code is sent)."
+        },
+        "tap.defaultMode": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "exam",
+            "practice"
+          ],
+          "enumDescriptions": [
+            "Ask once per folder when recording starts (exam mode is preselected).",
+            "Record new folders in exam mode without asking.",
+            "Record new folders in practice mode without asking."
+          ],
+          "default": "ask",
+          "description": "Recording mode for a folder recorded for the first time. Exam mode turns AI features and code suggestions off for the folder and locks the TAP settings. The mode is written in the log; switch it with TAP: Choose Recording Mode."
         }
       }
     }

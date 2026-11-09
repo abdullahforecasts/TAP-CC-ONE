@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.4 (fixes from testing 0.3.3)
+
+**Exam mode by default**
+
+- When a folder is recorded for the first time, TAP-CC-ONE asks for the mode, with **Exam mode** preselected (also used when the question is dismissed). Exam mode turns AI features and code suggestions off for the folder, locks the TAP settings and turns terminal shell integration on. **Practice mode** changes nothing and records when AI was available.
+- The status bar shows the mode (`TAP · Exam`). Switch it from the TAP menu or with **TAP: Choose Recording Mode**; the switch is written in the log, and switching to practice is shown to the reader. A teacher's policy in `.tap/config.json` decides the mode and cannot be switched.
+- New setting `tap.defaultMode` (`ask`, `exam`, `practice`).
+
+**AI really turned off**
+
+- 0.3.3 wrote "turn off AI" only to the folder's settings; VS Code refused the AI chat setting there, so AI chat stayed on (the log did show it: AI_ON_AFTER_DECLARED_OFF). Settings are now written at the narrowest level VS Code accepts (folder, then workspace, then user for the AI settings). User-level changes are put back when recording stops or when switching to practice mode.
+- If AI is still on a few seconds after exam mode starts, the student is told how to turn it off.
+- Code that arrives from outside the editor while AI is available (Copilot's edit or agent mode writes files directly) is reported (OUTSIDE_CHANGE_WHILE_AI).
+
+**Images, PDFs and other files**
+
+- Files in the folder that are not code (images, PDFs, documents, archives, audio and video, and small text files outside the include patterns) are listed in the log with size and SHA-256: those present when recording starts, and every file added, changed or deleted. When one is open in VS Code, the time it was shown is recorded.
+- **Export** ships them under `attachments/` in the zip (up to 25 MB each, 50 MB in all), and opening the zip checks them against the log.
+- New findings: ASSETS_PRESENT, ASSET_ADDED (also for files added while recording was off), ASSET_VIEWED, ASSET_REMOVED, ATTACHMENT_MISMATCH, ATTACHMENT_NOT_IN_LOG, ATTACHMENT_NOT_SHIPPED. About this log lists the files.
+
+**Replay colours**
+
+- Undo after many small edits no longer loses the origin of the text it brings back (BSCS25040: code that came from outside showed as "brought back by undo/redo" without its colour). The undo history now keeps 512 KB of removed text per file instead of 64 pieces, and restores line by line when the editor splits the text differently.
+- Editors that replace the whole file for every few characters typed (some Markdown editors) no longer make typing look like a tool or AI insert: such a change is judged by what it really changed.
+- The recorder's bulk flag is no longer used; the verifier decides from the text. A suggestion that completes the word being typed counts as "completion"; 40+ characters at once is "tool / AI insert".
+
 ## 0.3.3 (fixes from the first classroom test)
 
 **AI assistance**

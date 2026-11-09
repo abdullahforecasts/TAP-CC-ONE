@@ -14,7 +14,7 @@ import { bytesEqual, toHex } from './bytes.js';
 import { Flag, Kind } from './constants.js';
 import { checkpointMessage, keyFingerprint, verifySignature } from './crypto.js';
 import { TapError } from './errors.js';
-import { genesisHash, recordHash } from './hash.js';
+import { genesisHash, recordHash, sha256 } from './hash.js';
 import { toLogPath } from './paths.js';
 import type { Composition } from './provenance.js';
 import { type ParsedLog, readLog } from './reader.js';
@@ -39,6 +39,12 @@ export interface SubmittedFile {
   /** Path relative to the submission root; '\\' separators are accepted. */
   path: string;
   content: Uint8Array | string;
+}
+
+/** A shipped attachment given by its SHA-256 instead of its content. */
+export interface AttachmentRef {
+  path: string;
+  sha256: Uint8Array;
 }
 
 /** Result of checking one ANCHOR token (supplied by @tap/anchor; the core does no X.509/CMS). */
@@ -66,6 +72,11 @@ export interface VerifyOptions {
   submission?: readonly SubmittedFile[];
   /** Verifies timestamp tokens (stage 4). Without it, tokens are reported as not verified. */
   anchorVerifier?: AnchorVerifier;
+  /**
+   * Files that are not code shipped with the submission (an export's attachments/ folder,
+   * 0.3.4), compared with what the log recorded about them (stage 7). Content or its SHA-256.
+   */
+  attachments?: readonly (SubmittedFile | AttachmentRef)[];
 }
 
 /** One ANCHOR record as the verifier saw it. */
@@ -640,6 +651,7 @@ export function verifyLog(bytes: Uint8Array, options: VerifyOptions = {}): Verif
   activity.terminalReuse = reuse.sort((a, b) => a.t - b.t);
   report.activity = activity;
   activityFindings(records, report, add);
+  if (options.attachments) compareAttachments(activity, options.attachments, add);
 
   report.verdict = verdictOf(findings);
   return report;
@@ -739,6 +751,85 @@ function activityFindings(
     }
   }
 
+  // Changes made outside the editor while AI was available: an AI agent (Copilot edits or agent
+  // mode, a CLI agent) writes files directly, so its code arrives as an outside change (0.3.4).
+  const outsideWhileAi: string[] = [];
+  let sessionAt = 0;
+  for (const rec of records) {
+    if (rec.k === Kind.SESSION_START) sessionAt = rec.t;
+    if (rec.k !== Kind.FILE_SNAPSHOT || rec.b.origin !== 'external') continue;
+    // Files found changed when a session starts changed while nothing was recorded; editor
+    // settings are written by the editor (and by exam mode).
+    if (rec.t - sessionAt < 5000 || rec.b.path.startsWith('.vscode/')) continue;
+    if (activity.aiOn.some((p) => rec.t >= p.from && rec.t <= p.to)) {
+      outsideWhileAi.push(`${rec.b.path} ${fmtClock(rec.t)}`);
+    }
+  }
+  if (outsideWhileAi.length > 0) {
+    act(
+      'warn',
+      'OUTSIDE_CHANGE_WHILE_AI',
+      `${outsideWhileAi.length} change(s) arrived from outside the editor while AI features were available (an AI agent such as Copilot's edit or agent mode writes files directly): ${outsideWhileAi.slice(0, 5).join(', ')} UTC${outsideWhileAi.length > 5 ? ', ...' : ''}`,
+    );
+  }
+
+  // Recording mode (0.3.4).
+  const lastMode = activity.modes[activity.modes.length - 1];
+  if (lastMode) {
+    act(
+      'info',
+      lastMode === 'exam' ? 'MODE_EXAM' : 'MODE_PRACTICE',
+      lastMode === 'exam'
+        ? 'recorded in exam mode: AI features and code suggestions turned off, TAP settings locked'
+        : 'recorded in practice mode: AI features and suggestions allowed (and recorded)',
+    );
+  }
+  for (const m of activity.modeSwitches) {
+    act(
+      m.to === 'practice' ? 'warn' : 'info',
+      'MODE_SWITCHED',
+      `switched from ${m.from ?? 'no'} mode to ${m.to} mode at ${fmtClock(m.t)} UTC`,
+      m.seq,
+    );
+  }
+
+  // Files that are not recorded as text: images, PDFs... (0.3.4).
+  const initial = activity.assets.filter((x) => x.initial);
+  if (initial.length > 0) {
+    act(
+      'info',
+      'ASSETS_PRESENT',
+      `${initial.length} file(s) that are not code were in the folder when recording started: ${initial
+        .slice(0, 5)
+        .map((x) => x.p)
+        .join(', ')}${initial.length > 5 ? ', ...' : ''}`,
+    );
+  }
+  for (const x of activity.assets) {
+    const readable = x.k === 'image' || x.k === 'pdf' || x.k === 'document';
+    const what = `${ASSET_TEXT[x.k]} "${x.p}" (${fmtBytes(x.n)})`;
+    if (x.added !== undefined) {
+      act(
+        readable ? 'warn' : 'info',
+        'ASSET_ADDED',
+        x.addedOffline
+          ? `${what} was added to the folder while recording was off (found at ${fmtClock(x.added)} UTC)`
+          : `${what} was added to the folder at ${fmtClock(x.added)} UTC`,
+        x.addedSeq,
+      );
+    }
+    if (readable && x.visibleMs >= 60_000) {
+      act('warn', 'ASSET_VIEWED', `${what} was shown in VS Code for ${fmtMin(x.visibleMs)}`);
+    }
+    if (x.deleted !== undefined && (readable || x.added !== undefined)) {
+      act(
+        readable ? 'warn' : 'info',
+        'ASSET_REMOVED',
+        `${what} was deleted from the folder at ${fmtClock(x.deleted)} UTC`,
+      );
+    }
+  }
+
   // Away from the editor.
   const longAway = activity.away.filter((p) => p.to - p.from >= AWAY_MIN_MS);
   if (activity.awayMs >= AWAY_MIN_MS) {
@@ -792,6 +883,64 @@ function activityFindings(
       'BROAD_FOLDER',
       `the log tracks ${report.finalFiles.length} files: the recorded folder may be much broader than the assignment`,
     );
+  }
+}
+
+const ASSET_TEXT: Record<string, string> = {
+  image: 'image',
+  pdf: 'PDF',
+  document: 'document',
+  archive: 'archive',
+  media: 'audio/video file',
+  other: 'file',
+};
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** Compares the files shipped in attachments/ with the hashes the log recorded (0.3.4). */
+function compareAttachments(
+  activity: NonNullable<VerifyReport['activity']>,
+  attachments: readonly (SubmittedFile | AttachmentRef)[],
+  add: (f: Finding) => void,
+): void {
+  const shipped = new Map(attachments.map((a) => [toLogPath(a.path), a]));
+  for (const x of activity.assets) {
+    if (x.deleted !== undefined) continue;
+    const file = shipped.get(x.p);
+    if (!file) {
+      add({
+        stage: 'activity',
+        severity: 'info',
+        code: 'ATTACHMENT_NOT_SHIPPED',
+        message: `${x.p} was in the folder but is not in the submission's attachments (too large, or removed)`,
+      });
+      continue;
+    }
+    shipped.delete(x.p);
+    const hash =
+      'sha256' in file
+        ? file.sha256
+        : sha256(typeof file.content === 'string' ? new TextEncoder().encode(file.content) : file.content);
+    if (x.h && !bytesEqual(hash, x.h)) {
+      add({
+        stage: 'activity',
+        severity: 'warn',
+        code: 'ATTACHMENT_MISMATCH',
+        message: `attachments/${x.p} differs from the file the log recorded`,
+      });
+    }
+  }
+  for (const p of shipped.keys()) {
+    add({
+      stage: 'activity',
+      severity: 'warn',
+      code: 'ATTACHMENT_NOT_IN_LOG',
+      message: `attachments/${p} is in the submission but the log never recorded it`,
+    });
   }
 }
 

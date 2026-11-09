@@ -11,14 +11,24 @@ import * as vscode from 'vscode';
 const NOISE =
   /^(Welcome|Settings|Keyboard Shortcuts|Release Notes|Running Extensions|Extension: .*|Walkthrough.*|Log: .*)$/;
 
+/**
+ * `place` says where a URI is: 'recorded' (a file of the folder recorded as text, or TAP's own),
+ * a folder-relative path (a file of the folder that is not recorded as text: an image, a PDF...),
+ * or undefined (outside the folder).
+ */
 export function currentOpenItems(
-  isRecorded: (uri: vscode.Uri) => boolean,
+  place: (uri: vscode.Uri) => 'recorded' | { rel: string } | undefined,
   monitored: (terminal: vscode.Terminal) => boolean | undefined,
 ): OpenItem[] {
+  const isRecorded = (uri: vscode.Uri) => place(uri) === 'recorded';
+  const inside = (uri: vscode.Uri) => {
+    const p = place(uri);
+    return typeof p === 'object' ? p.rel : undefined;
+  };
   const items = new Map<string, OpenItem>();
   const add = (item: OpenItem) => {
     const name = item.name.slice(0, 300);
-    const key = `${item.k}\u0000${name}`;
+    const key = `${item.in ? 'in' : item.k}\u0000${name}`;
     const prev = items.get(key);
     const merged: OpenItem = { ...item, name };
     if (prev?.vis) merged.vis = true;
@@ -27,6 +37,11 @@ export function currentOpenItems(
   };
   const fromUri = (uri: vscode.Uri, label: string, vis: boolean, notebook = false) => {
     if (isRecorded(uri)) return;
+    const rel = inside(uri);
+    if (rel !== undefined) {
+      add({ k: notebook ? 'notebook' : 'file', name: rel, vis, in: true });
+      return;
+    }
     if (uri.scheme === 'untitled') add({ k: 'untitled', name: label, vis });
     else if (uri.scheme === 'file')
       add({ k: notebook ? 'notebook' : 'file', name: path.basename(uri.fsPath), vis });
@@ -41,7 +56,10 @@ export function currentOpenItems(
       else if (input instanceof vscode.TabInputNotebook) fromUri(input.uri, tab.label, vis, true);
       else if (input instanceof vscode.TabInputNotebookDiff) fromUri(input.modified, tab.label, vis, true);
       else if (input instanceof vscode.TabInputCustom) {
-        if (!isRecorded(input.uri)) add({ k: 'other', name: tab.label, vis });
+        // Image previews, PDF viewers and other custom editors.
+        const rel = inside(input.uri);
+        if (rel !== undefined) add({ k: 'file', name: rel, vis, in: true });
+        else if (!isRecorded(input.uri)) add({ k: 'other', name: tab.label, vis });
       } else if (input instanceof vscode.TabInputWebview) {
         if (input.viewType.includes('tap.viewer')) continue;
         const web = /simpleBrowser|browser|preview/i.test(input.viewType);
