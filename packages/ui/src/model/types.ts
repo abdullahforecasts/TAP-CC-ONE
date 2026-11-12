@@ -143,6 +143,10 @@ export interface SessionInfo {
   os: string;
   ext: string;
   aiExt: string[];
+  /** AI extensions installed or enabled during the session, with when (recorder 0.3.5+ also others). */
+  aiExtAdded?: Array<{ id: string; t: number }>;
+  /** Extensions with a terminal of their own (recorder 0.3.5+). */
+  termExt?: string[];
   liveShare: boolean;
   settings: Record<string, string | number | boolean>;
   /** Fingerprint of the session's signing key. */

@@ -4,7 +4,7 @@
  * Only names are recorded (a file's base name, a tab's label), never contents or full paths.
  */
 import * as path from 'node:path';
-import type { OpenItem } from '@tap/core';
+import { type OpenItem, tabTitle } from '@tap/core';
 import * as vscode from 'vscode';
 
 /** Tabs that are part of VS Code itself and say nothing about the work. */
@@ -19,7 +19,14 @@ const NOISE =
 export function currentOpenItems(
   place: (uri: vscode.Uri) => 'recorded' | { rel: string } | undefined,
   monitored: (terminal: vscode.Terminal) => boolean | undefined,
+  aiNames: readonly string[] = [],
 ): OpenItem[] {
+  const squash = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const names = aiNames.map(squash).filter((n) => n.length >= 4);
+  const isAi = (...texts: string[]) => {
+    const t = squash(texts.join(' '));
+    return names.some((n) => t.includes(n));
+  };
   const isRecorded = (uri: vscode.Uri) => place(uri) === 'recorded';
   const inside = (uri: vscode.Uri) => {
     const p = place(uri);
@@ -27,11 +34,12 @@ export function currentOpenItems(
   };
   const items = new Map<string, OpenItem>();
   const add = (item: OpenItem) => {
-    const name = item.name.slice(0, 300);
+    const name = (item.k === 'other' || item.k === 'web' ? tabTitle(item.name) : item.name).slice(0, 300);
     const key = `${item.in ? 'in' : item.k}\u0000${name}`;
     const prev = items.get(key);
     const merged: OpenItem = { ...item, name };
     if (prev?.vis) merged.vis = true;
+    if (prev?.ai) merged.ai = true;
     if (!merged.vis) delete merged.vis;
     items.set(key, merged);
   };
@@ -63,12 +71,15 @@ export function currentOpenItems(
       } else if (input instanceof vscode.TabInputWebview) {
         if (input.viewType.includes('tap.viewer')) continue;
         const web = /simpleBrowser|browser|preview/i.test(input.viewType);
-        add({ k: web ? 'web' : 'other', name: tab.label, vis });
+        const item: OpenItem = { k: web ? 'web' : 'other', name: tab.label, vis };
+        // A panel of an AI extension (its chat, its agent sessions...).
+        if (isAi(input.viewType, tab.label)) item.ai = true;
+        add(item);
       } else if (input instanceof vscode.TabInputTerminal) {
         // terminals are listed below
       } else if (!NOISE.test(tab.label)) {
         // Chat editors, interactive windows and other tabs without a public input type.
-        add({ k: 'other', name: tab.label, vis });
+        add({ k: 'other', name: tab.label, vis, ...(isAi(tab.label) ? { ai: true } : {}) });
       }
     }
   }

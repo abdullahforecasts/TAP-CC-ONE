@@ -80,15 +80,85 @@ export interface AiInputs {
 }
 
 /**
- * AI counts as available when AI features are not turned off (chat.disableAIFeatures) and an AI
- * assistant is installed. `inline` says whether ghost-text suggestions can appear as well.
+ * AI counts as available when VS Code's own AI (Copilot, built-in chat) is not turned off by
+ * chat.disableAIFeatures, or when ANY other AI extension is enabled: that setting does not reach
+ * third-party assistants (Kilo Code, Cline, Continue, Codeium...), so their presence alone means
+ * AI could be used (0.3.5). `inline` says whether ghost-text suggestions can appear as well.
  */
 export function aiStateOf(i: AiInputs): { on: boolean; inline: boolean; chat: boolean; active: string[] } {
   const chat = !i.disableAiFeatures;
-  const assistant = i.installed.length > 0;
-  const copilotOnly = assistant && i.installed.every((id) => id.startsWith('github.copilot'));
-  const inline = chat && assistant && i.inlineSuggest && !(copilotOnly && !i.copilotEnabled);
-  return { on: chat && assistant, inline, chat, active: [...i.active].sort() };
+  const copilot = i.installed.filter((id) => id.startsWith('github.copilot'));
+  const others = i.installed.filter((id) => !id.startsWith('github.copilot'));
+  const copilotOn = chat && copilot.length > 0;
+  const inline = i.inlineSuggest && ((copilotOn && i.copilotEnabled) || others.length > 0);
+  return { on: copilotOn || others.length > 0, inline, chat, active: [...i.active].sort() };
+}
+
+/** What a VS Code extension tells about itself (its package.json). */
+export interface ExtensionFacts {
+  id: string;
+  builtin: boolean;
+  displayName?: string;
+  description?: string;
+  categories?: string[];
+  keywords?: string[];
+  /** contributes.chatParticipants / languageModelTools / languageModels */
+  contributesAi?: boolean;
+  /** contributes.terminal (terminal profiles) */
+  contributesTerminal?: boolean;
+}
+
+/** Terminal extensions known to run commands outside VS Code's own terminal. */
+export const TERMINAL_EXTENSIONS: readonly string[] = [
+  'portaterm.portaterm',
+  'teranis.terminal-tabs',
+  'tyriar.terminal-tabs',
+  'formulahendry.terminal',
+  'jeff-hykin.better-terminal',
+  'reloadedextensions.reloaded-terminal',
+];
+const TERMINAL_SET = new Set(TERMINAL_EXTENSIONS);
+
+/** Publishers of language support whose terminal profiles are not a way around recording. */
+const LANGUAGE_PUBLISHERS = new Set([
+  'ms-vscode',
+  'ms-python',
+  'ms-toolsai',
+  'ms-dotnettools',
+  'ms-vscode-remote',
+  'redhat',
+  'vscjava',
+  'golang',
+  'rust-lang',
+  'llvm-vs-code-extensions',
+  'formulahendry',
+  'danielpinto8zz6',
+  'franneck94',
+]);
+
+const AI_WORDS =
+  /\b(ai|llm|llms|gpt|chatgpt|openai|copilot|claude|anthropic|gemini|ollama|deepseek|mistral|codegen|agentic|ai-agent|autocomplete-ai)\b/i;
+
+/**
+ * Whether an extension is an AI assistant or a terminal of its own (0.3.5): the known lists, the
+ * marketplace categories "AI" and "Chat", AI contributions (chat participants, language model
+ * tools), AI keywords, and terminal profiles or a terminal-like name.
+ */
+export function toolKind(e: ExtensionFacts): 'ai' | 'terminal' | undefined {
+  const id = e.id.toLowerCase();
+  if (e.builtin || id === 'abdullahforecasts.tap-cc-one') return undefined;
+  if (AI_SET.has(id)) return 'ai';
+  if (TERMINAL_SET.has(id)) return 'terminal';
+  const categories = (e.categories ?? []).map((c) => c.toLowerCase());
+  if (categories.includes('ai') || categories.includes('chat') || e.contributesAi) return 'ai';
+  const words = [...(e.keywords ?? []), e.displayName ?? ''].join(' ');
+  if (AI_WORDS.test(words)) return 'ai';
+  const publisher = id.split('.')[0] ?? '';
+  if (!LANGUAGE_PUBLISHERS.has(publisher)) {
+    const name = `${e.displayName ?? ''} ${id.split('.')[1] ?? ''}`;
+    if (e.contributesTerminal || /term(inal)?\b|\bterm|\bpty\b|\bshell\b/i.test(name)) return 'terminal';
+  }
+  return undefined;
 }
 
 /** Workspace-folder settings that turn AI features off (G2, G4). */

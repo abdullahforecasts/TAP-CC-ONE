@@ -17,6 +17,13 @@ export interface FolderPolicy {
   lockSettings: boolean;
   /** Terminal shell integration is turned on so commands and output can be recorded. */
   requireShellIntegration: boolean;
+  /**
+   * With AI off (0.3.5): "block-ai" (default) turns off AI and terminal extensions; "allowlist"
+   * turns off every extension except TAP-CC-ONE and `allowExtensions`.
+   */
+  extensions?: 'block-ai' | 'allowlist';
+  /** Extension ids never turned off (e.g. "ms-vscode.cpptools"). */
+  allowExtensions?: string[];
 }
 
 export const DEFAULT_POLICY: FolderPolicy = {
@@ -96,6 +103,15 @@ export function parsePolicy(v: unknown): FolderPolicy | undefined {
     suggestions: p.suggestions === 'off' ? 'off' : 'on',
     lockSettings: p.lockSettings === true,
     requireShellIntegration: p.requireShellIntegration === true,
+    ...(p.extensions === 'allowlist' ? { extensions: 'allowlist' as const } : {}),
+    ...(Array.isArray(p.allowExtensions)
+      ? {
+          allowExtensions: p.allowExtensions
+            .filter((x): x is string => typeof x === 'string')
+            .map((x) => x.toLowerCase())
+            .slice(0, 200),
+        }
+      : {}),
   };
 }
 

@@ -92,7 +92,17 @@ export function About({ data }: { data: ViewData }) {
                 {s.app} {s.vsc} ({s.os})
               </td>
               <td>{s.ext}</td>
-              <td>{s.aiExt.length ? s.aiExt.join(', ') : 'none'}</td>
+              <td>
+                {s.aiExt.length ? s.aiExt.join(', ') : 'none'}
+                {(s.aiExtAdded ?? []).map((a) => (
+                  <div key={a.id} class="warn-text">
+                    + {a.id} (added {fmtDateTime(a.t)})
+                  </div>
+                ))}
+                {(s.termExt ?? []).length > 0 && (
+                  <div class="warn-text">terminal: {s.termExt!.join(', ')}</div>
+                )}
+              </td>
               <td>{s.endReason ?? 'without a clean end (crash or still open)'}</td>
             </tr>
           ))}

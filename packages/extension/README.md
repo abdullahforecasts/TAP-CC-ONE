@@ -4,7 +4,7 @@ Records a tamper-evident history of how your code was written, so you can show t
 
 **Author:** Abdullah Nawaz · **License:** PolyForm Noncommercial 1.0.0 (commercial use by agreement) · **Source:** [github.com/abdullahforecasts/TAP-CC-ONE](https://github.com/abdullahforecasts/TAP-CC-ONE)
 
-> Status: 0.3.4, development build (Part 4 of the plan, with the fixes from the first classroom test). The teacher's batch checker arrives in the next release.
+> Status: 0.3.5, development build (Part 4 of the plan, with the fixes from the first classroom test). The teacher's batch checker arrives in the next release.
 
 ## How it works
 
@@ -100,7 +100,9 @@ The settings in effect are written in the log when recording starts, and every c
 
 ### Modes
 
-**Exam mode** (the default) writes these settings for the folder: AI features off (`chat.disableAIFeatures`, inline suggestions, Copilot), word, snippet and tab-completion suggestions off, terminal shell integration on. Some editors accept the AI setting only in the user settings; TAP then sets it there and puts it back when recording stops. The TAP settings are locked to their defaults. **Practice mode** puts back what exam mode changed. Whatever the mode, the log records when AI was actually available.
+**Exam mode** (the default) writes these settings for the folder: AI features off (`chat.disableAIFeatures`, inline suggestions, Copilot), word, snippet and tab-completion suggestions off, terminal shell integration on, and `.tap` hidden in the Explorer. Some editors accept the AI setting only in the user settings; TAP then sets it there and puts it back when recording stops. The TAP settings are locked to their defaults.
+
+Exam mode also turns off AI extensions (Kilo Code, Cline, Continue, Codeium…) and extensions with a terminal of their own, through VS Code's `extensions.allowed` user setting (VS Code 1.96 or newer); VS Code asks for a window reload to stop them. They are turned back on when recording stops or in practice mode. Language support (C/C++, Python, Java…) stays on. VS Code's own suggestion list (after `.` or `->`) stays on too; what it inserts is shown as "completion" in the replay. **Practice mode** puts back what exam mode changed. Whatever the mode, the log records when AI was actually available.
 
 ### Teacher policy
 
@@ -116,6 +118,8 @@ Start recording the starter folder once so `.tap/config.json` is created, stop, 
 | `suggestions` | `on` (default), `off` | `off` turns word-based, snippet and tab-completion suggestions off for the folder |
 | `lockSettings` | `false` (default), `true` | The recorder ignores the student's TAP settings and uses the defaults |
 | `requireShellIntegration` | `false` (default), `true` | Turns terminal shell integration on so commands and output can be recorded |
+| `extensions` | `block-ai` (default), `allowlist` | With `ai: off`: `allowlist` turns off every extension except TAP-CC-ONE and `allowExtensions` |
+| `allowExtensions` | list of extension ids | Never turned off, e.g. `["ms-vscode.cpptools", "ms-python.python"]` |
 
 The config file's hash is in every session of the log, so a changed policy is visible.
 
@@ -125,6 +129,8 @@ The config file's hash is in every session of the log, so a changed policy is vi
 |---|---|
 | `log.codelog` | The log. Commit or submit it. |
 | `config.json` | What is recorded in this folder (its hash is part of the log) |
+
+Anything else written in `.tap` is not recorded as code. TAP-CC-ONE notes it in the log, ships it in the export, and offers to move it into the folder.
 | `lock` | Prevents two VS Code windows recording the same folder (ignored by git) |
 | `quarantine/` | Damaged bytes cut off after a crash, kept for transparency (ignored by git) |
 

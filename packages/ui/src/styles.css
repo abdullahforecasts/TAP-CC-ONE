@@ -839,3 +839,7 @@ fieldset.filters {
   border: none;
   padding: 0;
 }
+
+.warn-text {
+  color: var(--warn);
+}

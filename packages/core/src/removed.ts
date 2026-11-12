@@ -72,12 +72,11 @@ export class RemovedHistory {
   }
 
   /**
-   * The origins `text` had when it was removed: the newest removal equal to it, else the newest
-   * removal containing it (8 characters or more), else line by line (lines of 8 or more
-   * characters found in any removal keep their origins; the rest gets `fallback`). Undefined
-   * when nothing matches.
+   * The origins `text` had when it was removed, only when it was removed as a whole: the newest
+   * removal equal to it, else (8 characters or more) the newest containing it. Used for undo and
+   * for a paste of text that was just cut (a move, spec §7.1).
    */
-  restore(text: string, fallback: Origin, seq: number): RestoredPiece[] | undefined {
+  restoreExact(text: string): RestoredPiece[] | undefined {
     const n = this.entries.length;
     for (let i = n - 1; i >= 0; i--) {
       if (this.entries[i]!.text === text) return piecesOf(this.entries[i]!, 0, text.length);
@@ -88,6 +87,18 @@ export class RemovedHistory {
         if (at >= 0) return piecesOf(this.entries[i]!, at, text.length);
       }
     }
+    return undefined;
+  }
+
+  /**
+   * The origins `text` had when it was removed: the newest removal equal to it, else the newest
+   * removal containing it (8 characters or more), else line by line (lines of 8 or more
+   * characters found in any removal keep their origins; the rest gets `fallback`). Undefined
+   * when nothing matches.
+   */
+  restore(text: string, fallback: Origin, seq: number): RestoredPiece[] | undefined {
+    const exact = this.restoreExact(text);
+    if (exact) return exact;
     const out: RestoredPiece[] = [];
     let found = false;
     let at = 0;

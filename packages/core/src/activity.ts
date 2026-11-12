@@ -21,6 +21,8 @@ export interface OutsideOpen {
   visibleMs: number;
   /** Milliseconds it was open at all. */
   openMs: number;
+  /** A panel of an AI extension (0.3.5). */
+  ai?: boolean;
 }
 
 export interface TerminalReuse {
@@ -45,6 +47,8 @@ export interface AssetActivity {
   k: AssetKind;
   n: number;
   h?: Uint8Array;
+  /** In a folder TAP does not record as text (.tap/, build output...): likely code (0.3.5). */
+  skipped?: boolean;
   /** When it appeared: during recording (op add), or between sessions (found at a session start). */
   added?: number;
   addedSeq?: number;
@@ -80,6 +84,11 @@ export interface ActivitySummary {
   aiChoices: AiChoice[];
   /** Periods when AI assistance was available (on). */
   aiOn: ActivityPeriod[];
+  /**
+   * Periods when an assistant that can write files was available (Copilot or VS Code AI on, or an
+   * agent extension; not completion-only tools such as IntelliCode) (0.3.5).
+   */
+  agentOn: ActivityPeriod[];
   /** Periods after AI was declared off (by the student or the course policy). */
   declaredOff: ActivityPeriod[];
   /** Periods away from the editor window (FOCUS off). */
@@ -97,6 +106,40 @@ export interface ActivitySummary {
   modeSwitches: ModeSwitch[];
   /** Files in the folder that are not recorded as text (0.3.4). */
   assets: AssetActivity[];
+  /** Extensions installed or enabled after recording started (0.3.5). */
+  extensionsAdded: ExtensionAdded[];
+  /** Extensions that provide a terminal of their own, seen at any time (0.3.5). */
+  terminalExtensions: string[];
+  /** Panels of AI extensions shown in an editor tab (0.3.5). */
+  aiPanels: OutsideOpen[];
+  /** Extensions exam mode disabled, as last recorded (0.3.5). */
+  blocked: string[];
+}
+
+export interface ExtensionAdded {
+  t: number;
+  seq: number;
+  id: string;
+  kind: 'ai' | 'terminal' | 'other';
+  /** Found at a session start: installed while recording was off. */
+  offline: boolean;
+}
+
+/** AI extensions that only complete code in the editor and do not write files themselves. */
+const COMPLETION_ONLY = new Set([
+  'visualstudioexptteam.vscodeintellicode',
+  'supermaven.supermaven',
+  'tabnine.tabnine-vscode',
+  'codeium.codeium',
+  'tabby.vscode-tabby',
+  'ex3ndr.llama-coder',
+  '10nates.ollama-autocoder',
+  'huggingface.huggingface-vscode',
+]);
+
+/** Tab titles without the status marks some extensions put in front ("✓ Kilo Code"). */
+export function tabTitle(name: string): string {
+  return name.replace(/^[^\p{L}\p{N}._([<"'@#$~/\\-]+/u, '').trim() || name;
 }
 
 /** The recorder settings TAP ships with; anything weaker is reported. */
@@ -155,6 +198,7 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
   const summary: ActivitySummary = {
     aiChoices: [],
     aiOn: [],
+    agentOn: [],
     declaredOff: [],
     away: [],
     awayMs: 0,
@@ -168,22 +212,56 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
     modes: [],
     modeSwitches: [],
     assets: [],
+    extensionsAdded: [],
+    terminalExtensions: [],
+    aiPanels: [],
+    blocked: [],
   };
   const end = records.length > 0 ? records[records.length - 1]!.t : 0;
 
   let aiOnSince: number | undefined;
-  const setAi = (state: AiState | undefined, t: number) => {
-    if (!state) return;
-    if (state.on && aiOnSince === undefined) aiOnSince = t;
-    if (!state.on && aiOnSince !== undefined) {
+  // AI counts as on when the recorded state says so, or when an AI extension other than Copilot is
+  // enabled: chat.disableAIFeatures does not reach those, and recorders before 0.3.5 recorded
+  // "off" for them in exam mode.
+  let stateOn = false;
+  let thirdParty = false;
+  let agent = false;
+  let agentSince: number | undefined;
+  const update = (t: number) => {
+    const on = stateOn || thirdParty;
+    if (on && aiOnSince === undefined) aiOnSince = t;
+    if (!on && aiOnSince !== undefined) {
       summary.aiOn.push({ from: aiOnSince, to: t });
       aiOnSince = undefined;
     }
+    const agentNow = stateOn || agent;
+    if (agentNow && agentSince === undefined) agentSince = t;
+    if (!agentNow && agentSince !== undefined) {
+      summary.agentOn.push({ from: agentSince, to: t });
+      agentSince = undefined;
+    }
+  };
+  const setAi = (state: AiState | undefined, t: number) => {
+    if (!state) return;
+    stateOn = state.on;
+    update(t);
+  };
+  const setAiExt = (ids: readonly string[] | undefined, t: number) => {
+    if (!ids) return;
+    thirdParty = ids.some((id) => !id.toLowerCase().startsWith('github.copilot'));
+    agent = ids.some(
+      (id) => !id.toLowerCase().startsWith('github.copilot') && !COMPLETION_ONLY.has(id.toLowerCase()),
+    );
+    update(t);
   };
   const closeAi = (t: number) => {
     if (aiOnSince !== undefined) {
       summary.aiOn.push({ from: aiOnSince, to: t });
       aiOnSince = undefined;
+    }
+    if (agentSince !== undefined) {
+      summary.agentOn.push({ from: agentSince, to: t });
+      agentSince = undefined;
     }
   };
 
@@ -214,12 +292,28 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
     const c = current.get(key);
     if (!c) return;
     const tot = totals.get(key) ?? { k: c.item.k, name: c.item.name, visibleMs: 0, openMs: 0 };
+    if (c.item.ai || isAiPanel(c.item.name)) tot.ai = true;
     tot.openMs += Math.max(0, t - c.since);
     if (c.visSince !== undefined) tot.visibleMs += Math.max(0, t - c.visSince);
     totals.set(key, tot);
     current.delete(key);
   };
-  const setOpen = (items: readonly OpenItem[], t: number) => {
+  // Names of AI extensions seen in the log, to recognise their panels in older logs too.
+  const aiNames = new Set<string>();
+  const squash = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const isAiPanel = (name: string) => {
+    const n = squash(name);
+    for (const a of aiNames) if (a.length >= 4 && n.includes(a)) return true;
+    return false;
+  };
+  const noteAi = (ids: readonly string[] | undefined) => {
+    for (const id of ids ?? []) {
+      const short = squash(id.split('.')[1] ?? id);
+      if (short.length >= 4) aiNames.add(short);
+    }
+  };
+  const setOpen = (raw: readonly OpenItem[], t: number) => {
+    const items = raw.map((o) => (o.k === 'other' || o.k === 'web' ? { ...o, name: tabTitle(o.name) } : o));
     for (const item of items) {
       if (item.k === 'terminal' && item.mon === false && !summary.unmonitoredTerminals.includes(item.name)) {
         summary.unmonitoredTerminals.push(item.name);
@@ -261,6 +355,7 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
     if (!known) {
       const entry: AssetActivity = { p: a.p, k: a.k, n: a.n, changes: 0, visibleMs: 0, initial: false };
       if (a.h) entry.h = a.h;
+      if (a.skipped) entry.skipped = true;
       if (initialList && sessionIndex === 1) entry.initial = true;
       else {
         entry.added = t;
@@ -290,6 +385,37 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
   };
   let mode: RecordingMode | undefined;
 
+  // Extensions: known set per kind, to report what was added (0.3.5).
+  let known: { all: Set<string>; ai: Set<string>; term: Set<string> } | undefined;
+  const termSeen = new Set<string>();
+  const setExtensions = (
+    b: { exts?: string[]; aiExt?: string[]; termExt?: string[] },
+    t: number,
+    seq: number,
+    sessionStart: boolean,
+  ) => {
+    noteAi(b.aiExt);
+    if (!b.exts && !b.aiExt && !b.termExt) return;
+    for (const id of b.termExt ?? []) termSeen.add(id);
+    const next = {
+      all: new Set(b.exts ?? known?.all ?? []),
+      ai: new Set(b.aiExt ?? known?.ai ?? []),
+      term: new Set(b.termExt ?? known?.term ?? []),
+    };
+    for (const id of next.ai) next.all.add(id);
+    for (const id of next.term) next.all.add(id);
+    if (known) {
+      for (const id of next.all) {
+        if (known.all.has(id) || known.ai.has(id) || known.term.has(id)) continue;
+        const kind = next.ai.has(id) ? 'ai' : next.term.has(id) ? 'terminal' : 'other';
+        // A first exts list (older sessions recorded only AI extensions) is not "added".
+        if (kind === 'other' && known.all.size === 0) continue;
+        summary.extensionsAdded.push({ t, seq, id, kind, offline: sessionStart });
+      }
+    }
+    known = next;
+  };
+
   let settings: Record<string, unknown> = {};
   for (const rec of records) {
     switch (rec.k) {
@@ -307,11 +433,17 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
           summary.modes.push(rec.b.mode);
         }
         if (rec.b.assets) sessionAssets(rec.b.assets, rec.t, rec.s);
+        setExtensions(rec.b, rec.t, rec.s, true);
+        if (rec.b.blocked) summary.blocked = [...rec.b.blocked];
         if (rec.b.aiChoice) {
           summary.aiChoices.push(rec.b.aiChoice);
           setChoice(rec.b.aiChoice, rec.t);
         }
+        stateOn = false;
+        thirdParty = false;
+        agent = false;
         setAi(rec.b.ai, rec.t);
+        setAiExt(rec.b.aiExt, rec.t);
         settings = { ...(rec.b.settings ?? {}) };
         break;
       }
@@ -333,6 +465,7 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
           setChoice(rec.b.aiChoice, rec.t);
         }
         setAi(rec.b.ai, rec.t);
+        setAiExt(rec.b.aiExt, rec.t);
         if (rec.b.open) setOpen(rec.b.open, rec.t);
         if (rec.b.mode && rec.b.mode !== mode) {
           summary.modeSwitches.push({ t: rec.t, seq: rec.s, from: mode, to: rec.b.mode });
@@ -341,6 +474,8 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
           else summary.modes.push(rec.b.mode);
         }
         if (rec.b.assets) for (const a of rec.b.assets) assetSeen(a, rec.t, rec.s, false);
+        setExtensions(rec.b, rec.t, rec.s, false);
+        if (rec.b.blocked) summary.blocked = [...rec.b.blocked];
         if (rec.b.settings) {
           for (const [key, to] of Object.entries(rec.b.settings)) {
             const from = settings[key];
@@ -377,7 +512,10 @@ export function summarizeActivity(records: readonly AnyRecord[]): ActivitySummar
     const a = assets.get(tot.name);
     if (a) a.visibleMs += tot.visibleMs;
   }
-  summary.outside = [...totals.values()].sort((a, b) => b.visibleMs - a.visibleMs || b.openMs - a.openMs);
+  const byShown = (a: OutsideOpen, b: OutsideOpen) => b.visibleMs - a.visibleMs || b.openMs - a.openMs;
+  summary.aiPanels = [...totals.values()].filter((o) => o.ai).sort(byShown);
+  summary.outside = [...totals.values()].filter((o) => !o.ai).sort(byShown);
+  summary.terminalExtensions = [...termSeen].sort();
   summary.assets = [...assets.values()].sort((a, b) => a.p.localeCompare(b.p));
   return summary;
 }

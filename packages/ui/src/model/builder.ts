@@ -17,6 +17,7 @@ import {
   Replayer,
   type Span,
   SpanList,
+  tabTitle,
   toHex,
 } from '@tap/core';
 import { diffStats } from './diff.js';
@@ -180,6 +181,7 @@ export class LogModelBuilder {
           os: b.os,
           ext: b.ext,
           aiExt: [...b.aiExt],
+          ...(b.termExt ? { termExt: [...b.termExt] } : {}),
           liveShare: b.liveShare,
           settings,
           key: keyFingerprint(b.pub),
@@ -457,7 +459,32 @@ export class LogModelBuilder {
       case Kind.ENV_CHANGE: {
         const b = rec.b;
         const parts: string[] = [];
-        if (b.aiExt) parts.push(`AI extensions: ${b.aiExt.length ? b.aiExt.join(', ') : 'none'}`);
+        if (b.aiExt) {
+          parts.push(`AI extensions: ${b.aiExt.length ? b.aiExt.join(', ') : 'none'}`);
+          const session = this.sessions.at(-1);
+          if (session) {
+            for (const id of b.aiExt) {
+              if (session.aiExt.includes(id) || session.aiExtAdded?.some((a) => a.id === id)) continue;
+              if (!session.aiExtAdded) session.aiExtAdded = [];
+              session.aiExtAdded.push({ id, t: rec.t });
+              this.event(rec, 'environment', `AI extension installed or enabled: ${id}`, { tone: 'warning' });
+            }
+          }
+        }
+        if (b.termExt) {
+          const session = this.sessions.at(-1);
+          for (const id of b.termExt) {
+            if (session?.termExt?.includes(id)) continue;
+            if (session) {
+              if (!session.termExt) session.termExt = [];
+              session.termExt.push(id);
+            }
+            this.event(rec, 'environment', `Terminal extension installed or enabled: ${id}`, {
+              detail: 'commands run in its own terminal are not recorded',
+              tone: 'warning',
+            });
+          }
+        }
         if (b.liveShare !== undefined) parts.push(`Live Share ${b.liveShare ? 'on' : 'off'}`);
         if (b.vsc) parts.push(`editor ${b.vsc}`);
         if (parts.length > 0)
@@ -540,7 +567,10 @@ export class LogModelBuilder {
         }
         if (b.open) {
           const next = new Map<string, (typeof b.open)[number]>(
-            b.open.map((o) => [`${o.in ? 'in' : o.k}\u0000${o.name}`, o]),
+            b.open.map((raw) => {
+              const o = raw.k === 'other' || raw.k === 'web' ? { ...raw, name: tabTitle(raw.name) } : raw;
+              return [`${o.in ? 'in' : o.k}\u0000${o.name}`, o];
+            }),
           );
           for (const [key, o] of next) {
             if (o.k === 'terminal' && o.mon === false && !this.unmonitored.has(o.name)) {
@@ -556,11 +586,17 @@ export class LogModelBuilder {
               this.event(
                 rec,
                 'environment',
-                o.in
-                  ? `Opened in VS Code: "${o.name}" (in the folder, not code)`
-                  : `Opened outside the recorded folder: ${OPEN_KIND[o.k] ?? o.k} "${o.name}"`,
+                o.ai
+                  ? `AI panel opened: "${o.name}"`
+                  : o.in
+                    ? `Opened in VS Code: "${o.name}" (in the folder, not code)`
+                    : `Opened outside the recorded folder: ${OPEN_KIND[o.k] ?? o.k} "${o.name}"`,
                 {
-                  tone: o.in || o.k === 'web' || o.k === 'file' || o.k === 'notebook' ? 'notice' : 'normal',
+                  tone: o.ai
+                    ? 'warning'
+                    : o.in || o.k === 'web' || o.k === 'file' || o.k === 'notebook'
+                      ? 'notice'
+                      : 'normal',
                 },
               );
             }
@@ -615,6 +651,20 @@ export class LogModelBuilder {
     else if (e.origin === 'bulk' || e.origin === 'completion') bucket.bulk += e.ins.length;
     else bucket.other += e.ins.length;
 
+    if (e.moved) {
+      // Cut (or deleted) and pasted back: the text keeps its colours; one list entry per record.
+      const last = this.events.at(-1);
+      if (last && last.seq === rec.s && last.label.startsWith('Moved') && last.f === e.f) {
+        last.chars = (last.chars ?? 0) + e.ins.length;
+        return;
+      }
+      this.event(rec, 'paste', 'Moved code: pasted text that was just cut, it keeps its colours', {
+        f: e.f,
+        chars: e.ins.length,
+        detail: state.track.path,
+      });
+      return;
+    }
     if (PASTE_ORIGINS.has(e.origin) || e.origin === 'bulk') {
       const category: EventCategory = e.origin === 'bulk' ? 'bulk' : 'paste';
       const last = this.events.at(-1);

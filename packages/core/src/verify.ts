@@ -761,7 +761,7 @@ function activityFindings(
     // Files found changed when a session starts changed while nothing was recorded; editor
     // settings are written by the editor (and by exam mode).
     if (rec.t - sessionAt < 5000 || rec.b.path.startsWith('.vscode/')) continue;
-    if (activity.aiOn.some((p) => rec.t >= p.from && rec.t <= p.to)) {
+    if (activity.agentOn.some((p) => rec.t >= p.from && rec.t <= p.to)) {
       outsideWhileAi.push(`${rec.b.path} ${fmtClock(rec.t)}`);
     }
   }
@@ -794,7 +794,7 @@ function activityFindings(
   }
 
   // Files that are not recorded as text: images, PDFs... (0.3.4).
-  const initial = activity.assets.filter((x) => x.initial);
+  const initial = activity.assets.filter((x) => x.initial && !x.skipped);
   if (initial.length > 0) {
     act(
       'info',
@@ -806,6 +806,16 @@ function activityFindings(
     );
   }
   for (const x of activity.assets) {
+    if (x.skipped) {
+      // A file in .tap/ or build output: its edits are not recorded and it is not in the code.
+      act(
+        'warn',
+        'UNRECORDED_CODE_FILE',
+        `"${x.p}" (${fmtBytes(x.n)}) is in a folder TAP does not record${x.p.startsWith('.tap/') ? " (TAP's own folder)" : ''}: how it was written is not in the log${x.added !== undefined ? ` (appeared ${fmtClock(x.added)} UTC${x.addedOffline ? ', while recording was off' : ''})` : ''}`,
+        x.addedSeq,
+      );
+      continue;
+    }
     const readable = x.k === 'image' || x.k === 'pdf' || x.k === 'document';
     const what = `${ASSET_TEXT[x.k]} "${x.p}" (${fmtBytes(x.n)})`;
     if (x.added !== undefined) {
@@ -838,6 +848,49 @@ function activityFindings(
       'info',
       'AWAY_FROM_EDITOR',
       `away from the editor window ${activity.away.length} time(s), ${fmtMin(activity.awayMs)} in total; ${longAway.length} time(s) for a minute or more (longest ${fmtMin(longest.to - longest.from)} at ${fmtClock(longest.from)} UTC)`,
+    );
+  }
+
+  // Extensions (0.3.5): AI or terminal extensions added during recording, terminals of their own,
+  // panels of AI extensions, and what exam mode disabled.
+  for (const e of activity.extensionsAdded) {
+    const when = e.offline
+      ? `while recording was off (found at ${fmtClock(e.t)} UTC)`
+      : `at ${fmtClock(e.t)} UTC`;
+    if (e.kind === 'ai') {
+      act('warn', 'AI_EXTENSION_ADDED', `the AI extension ${e.id} was installed or enabled ${when}`, e.seq);
+    } else if (e.kind === 'terminal') {
+      act(
+        'warn',
+        'TERMINAL_EXTENSION_ADDED',
+        `the terminal extension ${e.id} was installed or enabled ${when}: commands run in it are not recorded`,
+        e.seq,
+      );
+    } else {
+      act('info', 'EXTENSION_ADDED', `the extension ${e.id} was installed or enabled ${when}`, e.seq);
+    }
+  }
+  const addedTerm = new Set(activity.extensionsAdded.filter((e) => e.kind === 'terminal').map((e) => e.id));
+  const otherTerm = activity.terminalExtensions.filter((id) => !addedTerm.has(id));
+  if (otherTerm.length > 0) {
+    act(
+      'warn',
+      'TERMINAL_EXTENSION',
+      `${otherTerm.join(', ')} ${otherTerm.length === 1 ? 'provides' : 'provide'} a terminal of ${otherTerm.length === 1 ? 'its' : 'their'} own: commands run there are not recorded`,
+    );
+  }
+  for (const o of activity.aiPanels) {
+    act(
+      o.visibleMs >= 10_000 ? 'warn' : 'info',
+      'AI_PANEL_SHOWN',
+      `the AI panel "${o.name}" was shown for ${fmtMin(o.visibleMs)} (open ${fmtMin(o.openMs)})`,
+    );
+  }
+  if (activity.blocked.length > 0) {
+    act(
+      'info',
+      'EXTENSIONS_BLOCKED',
+      `exam mode turned off ${activity.blocked.length} AI or terminal extension(s): ${activity.blocked.slice(0, 8).join(', ')}${activity.blocked.length > 8 ? ', ...' : ''}`,
     );
   }
 

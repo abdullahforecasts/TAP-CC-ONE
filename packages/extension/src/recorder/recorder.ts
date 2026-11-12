@@ -96,6 +96,9 @@ export interface SessionEnvironment {
   policy?: Record<string, boolean | number | string>;
   mode?: RecordingMode;
   assets?: Asset[];
+  exts?: string[];
+  termExt?: string[];
+  blocked?: string[];
 }
 
 export interface RecorderSettings extends ClassifySettings {
@@ -366,6 +369,9 @@ export class Recorder {
         ...(env.policy ? { policy: env.policy } : {}),
         ...(env.mode ? { mode: env.mode } : {}),
         ...(env.assets ? { assets: env.assets } : {}),
+        ...(env.exts ? { exts: env.exts } : {}),
+        ...(env.termExt ? { termExt: env.termExt } : {}),
+        ...(env.blocked && env.blocked.length > 0 ? { blocked: env.blocked } : {}),
       },
       time,
     );

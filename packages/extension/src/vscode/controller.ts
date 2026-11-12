@@ -65,6 +65,8 @@ const MODE_KEY = 'tap.mode';
 const WRITES_KEY = 'tap.settingWrites';
 /** At most this much of images, PDFs... goes into an export. */
 const EXPORT_ATTACHMENTS_MAX = 50 * 1024 * 1024;
+/** How long after exam mode starts to check that AI is really off. */
+const AI_CHECK_DELAY_MS = 3000;
 const UPDATE_CHECK_KEY = 'tap.lastUpdateCheck';
 const RELEASES_API = 'https://api.github.com/repos/abdullahforecasts/TAP-CC-ONE/releases/latest';
 const RELEASES_PAGE = 'https://github.com/abdullahforecasts/TAP-CC-ONE/releases/latest';
@@ -164,7 +166,10 @@ export class Controller implements vscode.Disposable {
         this.updateStatus();
       }),
     );
-    this.disposables.push(vscode.window.onDidChangeActiveTextEditor(() => this.checkOutsideEditor()));
+    this.disposables.push(
+      vscode.window.onDidChangeActiveTextEditor(() => this.checkOutsideEditor()),
+      vscode.workspace.onDidChangeTextDocument((e) => this.onEditOutside(e)),
+    );
     for (const folder of vscode.workspace.workspaceFolders ?? []) await this.openFolder(folder);
     this.anchors.start();
     this.updateStatus();
@@ -198,13 +203,33 @@ export class Controller implements vscode.Disposable {
     this.outsideStatus.text = '$(warning) TAP: not recording this file';
     this.outsideStatus.tooltip = `${name} is outside the recorded folder ${folders}: what you type here is NOT recorded.`;
     this.outsideStatus.show();
+  }
+
+  /** The first edit of a code file outside every recorded folder: a dialog, once per file (0.3.5). */
+  private onEditOutside(e: vscode.TextDocumentChangeEvent): void {
+    const doc = e.document;
+    if (e.contentChanges.length === 0) return;
+    if (doc.uri.scheme !== 'file' && doc.uri.scheme !== 'untitled') return;
+    if (NON_CODE_LANGUAGES.has(doc.languageId)) return;
+    const recording = [...this.sessions.values()].filter(
+      (s) => s.status === 'recording' || s.status === 'paused',
+    );
+    if (
+      recording.length === 0 ||
+      recording.some((s) => s.relOf(doc.uri) !== undefined || isInside(s.root, doc.uri))
+    )
+      return;
     const key = doc.uri.toString();
     if (this.warnedOutside.has(key)) return;
     this.warnedOutside.add(key);
+    const untitled = doc.uri.scheme === 'untitled';
+    const name = untitled ? 'This unsaved editor' : `"${path.basename(doc.uri.fsPath)}"`;
+    const folders = recording.map((s) => `"${s.name}"`).join(', ');
     void vscode.window.showWarningMessage(
       untitled
         ? `TAP-CC-ONE: typing in an unsaved editor is NOT recorded. Save the file inside the recorded folder ${folders} first.`
         : `TAP-CC-ONE: ${name} is outside the recorded folder ${folders}, so what you type in it is NOT recorded. Move it into the recorded folder, or open and record the folder that contains it.`,
+      { modal: true },
     );
   }
 
@@ -390,11 +415,13 @@ export class Controller implements vscode.Disposable {
       anchors: this.anchors,
       rememberWrite: (w) => {
         const all = this.context.workspaceState.get<Record<string, SettingWrite[]>>(WRITES_KEY) ?? {};
-        const list = (all[id] ?? []).filter(
-          (x) => !(x.section === w.section && x.key === w.key && x.target === w.target),
-        );
+        const list = all[id] ?? [];
+        // Keep the value from before TAP's first change: that is what practice mode puts back.
+        if (list.some((x) => x.section === w.section && x.key === w.key && x.target === w.target)) return;
         void this.context.workspaceState.update(WRITES_KEY, { ...all, [id]: [...list, w] });
       },
+      onToolsAdded: (s, ids) => void this.onToolsAdded(folder, s, ids),
+      onStrayFile: (s, rel) => void this.onStrayFile(folder, s, rel),
       takeWrites: () => {
         const all = this.context.workspaceState.get<Record<string, SettingWrite[]>>(WRITES_KEY) ?? {};
         const list = all[id] ?? [];
@@ -429,7 +456,7 @@ export class Controller implements vscode.Disposable {
     await session.start({ paused: this.hasFolderFlag(PAUSED_KEY, folder), aiChoice, mode });
     if ((session.status === 'recording' || session.status === 'paused') && mode === 'exam') {
       // Some AI settings take a moment to apply: check that AI really is off.
-      setTimeout(() => void this.warnIfAiStillOn(folder, session), 3000);
+      setTimeout(() => void this.warnIfAiStillOn(folder, session), AI_CHECK_DELAY_MS);
     }
     if (session.logIdHex) {
       const map = this.context.globalState.get<Record<string, string>>('tap.logIds') ?? {};
@@ -490,17 +517,73 @@ export class Controller implements vscode.Disposable {
     return pick?.mode;
   }
 
-  /** Exam mode: tells the student when AI features are still on and how to turn them off. */
+  /**
+   * Exam mode: tells the student, in the middle of the window, when extensions it turned off are
+   * still running (they stop after a window reload) or AI is still on, and how to fix it.
+   */
   private async warnIfAiStillOn(folder: vscode.WorkspaceFolder, session: FolderSession): Promise<void> {
     if (session.status !== 'recording' && session.status !== 'paused') return;
+    const running = session.blockedStillRunning();
+    if (running.length > 0) {
+      const reload = 'Reload Window';
+      const answer = await vscode.window.showWarningMessage(
+        `TAP-CC-ONE exam mode turned off ${running.join(', ')} for "${folder.name}". Reload the window to finish turning ${running.length === 1 ? 'it' : 'them'} off; until then the log records that AI or another terminal could be used.`,
+        { modal: true },
+        reload,
+      );
+      if (answer === reload) await vscode.commands.executeCommand('workbench.action.reloadWindow');
+      return;
+    }
     if (!session.aiStillOn()) return;
     const open = 'Open AI settings';
     const answer = await vscode.window.showWarningMessage(
-      `TAP-CC-ONE: exam mode could not turn off every AI feature for "${folder.name}". The log records that AI was available. Turn off "Disable AI Features" (chat.disableAIFeatures) and any AI extension.`,
+      `TAP-CC-ONE: exam mode could not turn off every AI feature for "${folder.name}". The log records that AI was available. Turn on "Disable AI Features" (chat.disableAIFeatures) and turn off any AI extension.`,
+      { modal: true },
       open,
     );
     if (answer === open) {
       await vscode.commands.executeCommand('workbench.action.openSettings', 'disableAIFeatures');
+    }
+  }
+
+  /** An AI or terminal extension was installed or enabled while recording (0.3.5). */
+  private async onToolsAdded(
+    folder: vscode.WorkspaceFolder,
+    session: FolderSession,
+    ids: string[],
+  ): Promise<void> {
+    if (session.mode !== 'exam') return;
+    await session.blockExtensions();
+    await vscode.window.showWarningMessage(
+      `TAP-CC-ONE: ${ids.join(', ')} was installed or enabled while "${folder.name}" is recorded in exam mode. This is written in the log, and exam mode turns ${ids.length === 1 ? 'it' : 'them'} off.`,
+      { modal: true },
+    );
+    await this.warnIfAiStillOn(folder, session);
+  }
+
+  /** A file appeared in .tap/ or in a folder TAP does not record (0.3.5). */
+  private async onStrayFile(
+    folder: vscode.WorkspaceFolder,
+    session: FolderSession,
+    rel: string,
+  ): Promise<void> {
+    const move = 'Move it into the folder';
+    const tap = rel.startsWith('.tap/');
+    const answer = await vscode.window.showWarningMessage(
+      `TAP-CC-ONE: "${rel}" is in ${tap ? "TAP's own folder (.tap)" : 'a folder TAP does not record'}, so what you write in it is NOT recorded and it is not exported as code. The log notes that it is there.`,
+      { modal: true },
+      move,
+    );
+    if (answer !== move) return;
+    const moved = session.moveIntoFolder(rel);
+    if (!moved) return;
+    try {
+      const doc = await vscode.workspace.openTextDocument(
+        vscode.Uri.file(path.join(folder.uri.fsPath, moved)),
+      );
+      await vscode.window.showTextDocument(doc);
+    } catch (e) {
+      this.log.warn(`could not open ${moved}: ${String(e)}`);
     }
   }
 

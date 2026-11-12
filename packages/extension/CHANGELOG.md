@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.5 (fixes from testing 0.3.4)
+
+**Exam mode turns off AI and terminal extensions**
+
+- AI extensions (Kilo Code, Cline, Roo Code, Continue, Codeium…) are not affected by VS Code's "Disable AI Features" setting. Exam mode now turns them off, and extensions that bring a terminal of their own (commands run there are not recorded), through VS Code's `extensions.allowed` user setting (VS Code 1.96 or newer). VS Code needs a window reload to stop them; TAP-CC-ONE asks for it. They are turned back on when recording stops or in practice mode.
+- AI extensions are recognised from the known list and also by marketplace category ("AI", "Chat"), AI features they add (chat participants, language-model tools) and keywords, so new assistants are caught too.
+- A teacher's policy can be stricter: `"extensions": "allowlist"` turns off every extension except TAP-CC-ONE and those in `"allowExtensions"`.
+- An AI or terminal extension installed or enabled during an exam is turned off at once, and the student is told in a dialog.
+
+**AI and extensions in the log**
+
+- AI now counts as available whenever a third-party AI extension is enabled. 0.3.4 recorded "AI off" in exam mode although Kilo Code was running; the verifier now reads older logs this way too.
+- Every installed extension is listed when recording starts, and any added during a session is reported (AI_EXTENSION_ADDED, TERMINAL_EXTENSION_ADDED, EXTENSION_ADDED). The viewer's Sessions table shows the ones added later.
+- AI panels shown in a tab are reported as such (AI_PANEL_SHOWN), once per panel: the "✓" and "◔" marks some extensions put in front of a tab's title no longer split one panel into several.
+
+**Cut and paste back**
+
+- Code that is cut (or deleted) and pasted back, in the same file or another, keeps its colours instead of becoming "pasted from outside": Ctrl+A, Ctrl+X, Ctrl+V no longer turns a whole file red. Code still found in another file stays "copied from own files", and text that was not just removed is still a paste.
+
+**Files TAP does not record**
+
+- Files written in TAP's own `.tap` folder, and code in build-output folders (`build/`, `out/`, `bin/`…), were silently not recorded and not exported. They are now listed in the log (UNRECORDED_CODE_FILE), shipped under `attachments/` in the export, and the student is told in a dialog with a button that moves the file into the recorded folder.
+- Exam mode hides `.tap` in the Explorer.
+
+**Warnings in the middle of the window**
+
+- Things the student must act on are shown as a dialog in the middle of the window instead of a corner notification: a file that is not recorded, an AI or terminal extension in exam mode (with **Reload Window**), AI still on in exam mode, the first edit of a code file outside the recorded folder (once per file), and exporting a log without code edits.
+
 ## 0.3.4 (fixes from testing 0.3.3)
 
 **Exam mode by default**

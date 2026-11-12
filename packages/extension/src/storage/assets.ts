@@ -70,6 +70,23 @@ for (const ext of [
 for (const ext of ['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz']) KINDS[ext] = 'archive';
 for (const ext of ['mp4', 'mov', 'mkv', 'webm', 'avi', 'mp3', 'wav', 'm4a', 'ogg']) KINDS[ext] = 'media';
 
+/** Files TAP itself keeps in .tap/; anything else there is a stray file (0.3.5). */
+export function isTapOwnFile(rel: string): boolean {
+  return (
+    /^\.tap\/(log\.codelog|config\.json|lock|\.gitignore)$/.test(rel) || rel.startsWith('.tap/quarantine/')
+  );
+}
+
+/**
+ * Folders TAP does not record that a student can still write code in: TAP's own folder and build
+ * output. Dependency and tool folders (node_modules, .git, .venv...) are not looked into.
+ */
+const WRITABLE_SKIPPED = new Set(['.tap', 'build', 'dist', 'out', 'target', 'bin', 'obj']);
+
+/** Source-code extensions: such a file in a folder TAP skips is listed whatever its size. */
+const CODE_EXT =
+  /\.(c|h|cpp|cc|cxx|hpp|hh|hxx|py|pyw|ipynb|java|kt|kts|js|jsx|mjs|cjs|ts|tsx|cs|go|rs|rb|php|swift|m|mm|sql|html|htm|css|scss|sh|bash|ps1|r|jl|hs|ml|scala|lua|dart|asm|s|txt|md)$/i;
+
 /** Files larger than this are listed without a hash and not copied into the export. */
 export const ASSET_HASH_MAX = 25 * 1024 * 1024;
 /** Text files outside the include patterns are listed up to this size. */
@@ -114,7 +131,15 @@ export function describeAsset(
   isTracked: (rel: string) => boolean,
 ): Asset | undefined {
   if (isTracked(rel)) return undefined;
-  if (rel.split('/').some((part) => SKIP_DIRS.has(part))) return undefined;
+  const dirs = rel.split('/').slice(0, -1);
+  // In a folder TAP skips, only stray files in .tap/ and code in build output are listed.
+  const skippedDirs = dirs.filter((d) => SKIP_DIRS.has(d));
+  let skipped = false;
+  if (skippedDirs.length > 0) {
+    if (skippedDirs.some((d) => !WRITABLE_SKIPPED.has(d))) return undefined;
+    if (dirs[0] === '.tap' ? isTapOwnFile(rel) : !CODE_EXT.test(rel)) return undefined;
+    skipped = true;
+  }
   const abs = path.join(root, ...rel.split('/'));
   let st: fs.Stats;
   try {
@@ -129,8 +154,10 @@ export function describeAsset(
   } catch {
     return undefined;
   }
+  if (!kind && skipped) kind = 'other';
   if (!kind) return undefined;
   const asset: Asset = { p: rel, n: st.size, k: kind };
+  if (skipped) asset.skipped = true;
   if (st.size <= ASSET_HASH_MAX) {
     try {
       asset.h = sha256File(abs);
@@ -158,7 +185,8 @@ export function scanAssets(root: string, isTracked: (rel: string) => boolean): A
       if (out.length >= ASSET_SCAN_MAX || ++visited >= SCAN_VISIT_MAX) return;
       const rel = prefix ? `${prefix}/${e.name}` : e.name;
       if (e.isDirectory()) {
-        if (!SKIP_DIRS.has(e.name)) walk(path.join(dir, e.name), rel, depth + 1);
+        if (!SKIP_DIRS.has(e.name) || WRITABLE_SKIPPED.has(e.name))
+          walk(path.join(dir, e.name), rel, depth + 1);
       } else if (e.isFile()) {
         const a = describeAsset(root, rel, isTracked);
         if (a) out.push(a);

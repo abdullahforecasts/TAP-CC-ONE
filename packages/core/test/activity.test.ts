@@ -289,3 +289,57 @@ describe('modes and files that are not code (0.3.4)', () => {
     );
   });
 });
+
+describe('extensions, AI panels and unrecorded files (0.3.5)', () => {
+  it('reports AI and terminal extensions added mid-session, AI panels, and counts third-party AI as on', () => {
+    const log = new RawLog({ tool: 'tap-cc-one/0.3.5' });
+    log.push('SESSION_START', {
+      ...sessionStart(key.publicKey),
+      ext: '0.3.5',
+      mode: 'exam',
+      aiChoice: 'off',
+      ai: ai(false),
+      exts: ['ms-vscode.cpptools'],
+      termExt: [],
+      assets: [{ p: '.tap/lab.cpp', n: 40, k: 'other', skipped: true }],
+    });
+    log.t += 2 * 60_000;
+    // Recorded as "off" by 0.3.4 recorders although Kilo Code was active.
+    log.push('ENV_CHANGE', {
+      aiExt: ['kilocode.kilo-code'],
+      exts: ['kilocode.kilo-code', 'ms-vscode.cpptools'],
+    });
+    log.push('ENV_CHANGE', { open: [{ k: 'other', name: '✓ Kilo Code', vis: true }] });
+    log.t += 60_000;
+    log.push('ENV_CHANGE', { open: [{ k: 'other', name: '◔ Kilo Code', vis: true }] });
+    log.t += 60_000;
+    log.push('ENV_CHANGE', {
+      termExt: ['someone.portaterm'],
+      exts: ['kilocode.kilo-code', 'ms-vscode.cpptools', 'someone.portaterm', 'usernamehw.errorlens'],
+      blocked: ['kilocode.kilo-code', 'someone.portaterm'],
+    });
+    log.t += 60_000;
+    log.push('SESSION_END', { sid: SID, reason: 'close' });
+    const r = verifyLog(log.bytes());
+    const found = r.findings.filter((f) => f.stage === 'activity').map((f) => `${f.severity}:${f.code}`);
+    expect(found).toEqual(
+      expect.arrayContaining([
+        'warn:AI_ON_AFTER_DECLARED_OFF',
+        'warn:AI_EXTENSION_ADDED',
+        'warn:TERMINAL_EXTENSION_ADDED',
+        'info:EXTENSION_ADDED',
+        'warn:AI_PANEL_SHOWN',
+        'info:EXTENSIONS_BLOCKED',
+        'warn:UNRECORDED_CODE_FILE',
+      ]),
+    );
+    expect(found).not.toContain('info:OPEN_OUTSIDE_FOLDER');
+    // One panel, not one per status mark.
+    expect(r.activity!.aiPanels.map((p) => p.name)).toEqual(['Kilo Code']);
+    expect(r.activity!.extensionsAdded.map((e) => [e.id, e.kind])).toEqual([
+      ['kilocode.kilo-code', 'ai'],
+      ['someone.portaterm', 'terminal'],
+      ['usernamehw.errorlens', 'other'],
+    ]);
+  });
+});

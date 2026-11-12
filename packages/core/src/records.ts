@@ -56,6 +56,12 @@ export interface SessionStartBody {
   mode?: RecordingMode;
   /** Files in the folder that are not recorded as text (images, PDFs...) when the session starts. */
   assets?: Asset[];
+  /** Installed, enabled extensions that are not part of the editor (0.3.5). */
+  exts?: string[];
+  /** Of those, the ones that provide a terminal of their own (0.3.5). */
+  termExt?: string[];
+  /** Extensions exam mode disabled (0.3.5). */
+  blocked?: string[];
 }
 
 export type RecordingMode = 'exam' | 'practice';
@@ -71,6 +77,8 @@ export interface Asset {
   k: AssetKind;
   /** ENV_CHANGE only: what happened to it. */
   op?: 'add' | 'change' | 'delete';
+  /** It is in a folder TAP does not record (.tap/, build output...): code there is invisible (0.3.5). */
+  skipped?: boolean;
 }
 
 export type AssetKind = 'image' | 'pdf' | 'document' | 'archive' | 'media' | 'other';
@@ -100,6 +108,8 @@ export interface OpenItem {
   mon?: boolean;
   /** Inside the recorded folder but not recorded as text (an image, a PDF...; 0.3.4). */
   in?: boolean;
+  /** A panel of an AI extension (0.3.5). */
+  ai?: boolean;
 }
 
 export interface SessionEndBody {
@@ -204,6 +214,9 @@ export interface EnvChangeBody {
   mode?: RecordingMode;
   /** Files that are not recorded as text, added, changed or deleted (0.3.4). */
   assets?: Asset[];
+  exts?: string[];
+  termExt?: string[];
+  blocked?: string[];
 }
 
 export interface BodyByKind {
@@ -315,6 +328,7 @@ const openItem: Check = (v, p) => {
   if (v.vis !== undefined && bool(v.vis, p)) return 'vis: expected boolean';
   if (v.mon !== undefined && bool(v.mon, p)) return 'mon: expected boolean';
   if (v.in !== undefined && bool(v.in, p)) return 'in: expected boolean';
+  if (v.ai !== undefined && bool(v.ai, p)) return 'ai: expected boolean';
   return undefined;
 };
 const recordingMode = oneOf('exam', 'practice');
@@ -330,6 +344,7 @@ const asset: Check = (v, p) => {
     const op = oneOf('add', 'change', 'delete')(v.op, p);
     if (op) return `op: ${op}`;
   }
+  if (v.skipped !== undefined && bool(v.skipped, p)) return 'skipped: expected boolean';
   return undefined;
 };
 
@@ -391,6 +406,9 @@ const BODY_SPECS: Record<KindName, Spec> = {
     policy: opt(map),
     mode: opt(recordingMode),
     assets: opt(arrayOf(asset)),
+    exts: opt(arrayOf(tstr({ max: 200 }))),
+    termExt: opt(arrayOf(tstr({ max: 200 }))),
+    blocked: opt(arrayOf(tstr({ max: 200 }))),
   },
   SESSION_END: { sid: req(bstr(16)), reason: req(oneOf('close', 'reload', 'deactivate')) },
   FILE_SNAPSHOT: {
@@ -457,6 +475,9 @@ const BODY_SPECS: Record<KindName, Spec> = {
     open: opt(arrayOf(openItem)),
     mode: opt(recordingMode),
     assets: opt(arrayOf(asset)),
+    exts: opt(arrayOf(tstr({ max: 200 }))),
+    termExt: opt(arrayOf(tstr({ max: 200 }))),
+    blocked: opt(arrayOf(tstr({ max: 200 }))),
   },
 };
 

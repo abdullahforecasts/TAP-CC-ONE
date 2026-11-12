@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { AiState } from '@tap/core';
 import * as vscode from 'vscode';
-import { aiStateOf, isAiExtension } from '../recorder/environment.js';
+import { aiStateOf, type ExtensionFacts, toolKind } from '../recorder/environment.js';
 
 type Flat = Record<string, boolean | number | string>;
 
@@ -102,19 +102,72 @@ export function userCustomizations(globalStorage: string, folder: string): Flat 
   return { snippetFiles, snippets, snippetChars, typeKeybindings };
 }
 
-/** The AI state right now (G1, G3). */
+/** What an installed, enabled extension says about itself. */
+export function extensionFacts(e: vscode.Extension<unknown>): ExtensionFacts {
+  const pkg = (e.packageJSON ?? {}) as {
+    isBuiltin?: boolean;
+    displayName?: string;
+    description?: string;
+    categories?: unknown;
+    keywords?: unknown;
+    contributes?: Record<string, unknown>;
+  };
+  const strings = (v: unknown) =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  const contributes = pkg.contributes ?? {};
+  const facts: ExtensionFacts = {
+    id: e.id.toLowerCase(),
+    builtin: pkg.isBuiltin === true || e.id.toLowerCase().startsWith('vscode.'),
+    categories: strings(pkg.categories),
+    keywords: strings(pkg.keywords),
+    contributesAi: [
+      'chatParticipants',
+      'languageModelTools',
+      'languageModels',
+      'languageModelChatProviders',
+    ].some((k) => contributes[k] !== undefined),
+    contributesTerminal: contributes.terminal !== undefined,
+  };
+  if (typeof pkg.displayName === 'string') facts.displayName = pkg.displayName;
+  if (typeof pkg.description === 'string') facts.description = pkg.description;
+  return facts;
+}
+
+/** Installed, enabled extensions that are not part of VS Code, with what they are (0.3.5). */
+export function installedExtensions(): Array<{
+  id: string;
+  kind: 'ai' | 'terminal' | undefined;
+  active: boolean;
+  names: string[];
+}> {
+  const out = [];
+  for (const e of vscode.extensions.all) {
+    const facts = extensionFacts(e);
+    if (facts.builtin) continue;
+    const short = facts.id.split('.')[1] ?? facts.id;
+    out.push({
+      id: facts.id,
+      kind: toolKind(facts),
+      active: e.isActive,
+      names: [short, facts.displayName ?? ''].filter((n) => n.length > 0),
+    });
+  }
+  return out.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** The AI state right now (G1, G3; third-party assistants count since 0.3.5). */
 export function currentAiState(folder: vscode.Uri): AiState {
   const ed = vscode.workspace.getConfiguration('editor', folder);
   const chat = vscode.workspace.getConfiguration('chat', folder);
   const copilot = vscode.workspace
     .getConfiguration('github.copilot', folder)
     .get<Record<string, boolean>>('enable');
-  const ai = vscode.extensions.all.filter((e) => isAiExtension(e.id));
+  const ai = installedExtensions().filter((e) => e.kind === 'ai');
   return aiStateOf({
     inlineSuggest: ed.get<boolean>('inlineSuggest.enabled', true),
     disableAiFeatures: chat.get<boolean>('disableAIFeatures', false),
     copilotEnabled: copilot?.['*'] !== false,
-    installed: ai.map((e) => e.id.toLowerCase()),
-    active: ai.filter((e) => e.isActive).map((e) => e.id.toLowerCase()),
+    installed: ai.map((e) => e.id),
+    active: ai.filter((e) => e.active).map((e) => e.id),
   });
 }

@@ -272,6 +272,9 @@ export const workspace = {
       fs.writeFileSync(uri.fsPath, content);
     },
   },
+  async openTextDocument(uri: Uri): Promise<TextDocument> {
+    return driver.open(uri.fsPath);
+  },
   getConfiguration(section: string, _scope?: unknown) {
     return {
       get<T>(key: string, fallback?: T): T {
@@ -304,6 +307,8 @@ export interface Message {
   kind: 'info' | 'warning' | 'error';
   text: string;
   items: string[];
+  /** Shown as a dialog in the middle of the window. */
+  modal?: boolean;
 }
 
 class StatusBarItem {
@@ -399,7 +404,10 @@ export enum ProgressLocation {
 function answer(kind: Message['kind']) {
   return async (text: string, ...items: unknown[]) => {
     const labels = items.filter((i): i is string => typeof i === 'string');
-    ui.messages.push({ kind, text, items: labels });
+    const modal = items.some(
+      (i) => typeof i === 'object' && i !== null && (i as { modal?: boolean }).modal === true,
+    );
+    ui.messages.push({ kind, text, items: labels, ...(modal ? { modal } : {}) });
     return labels.length > 0 ? ui.answers.shift() : undefined;
   };
 }
@@ -449,6 +457,10 @@ export const window = {
   async showOpenDialog(): Promise<Uri[] | undefined> {
     const f = ui.files.shift();
     return f ? [Uri.file(f)] : undefined;
+  },
+  async showTextDocument(doc: TextDocument): Promise<{ document: TextDocument }> {
+    window.activeTextEditor = { document: doc };
+    return { document: doc };
   },
   showInformationMessage: answer('info'),
   showWarningMessage: answer('warning'),
@@ -514,7 +526,7 @@ export const tasks = {
 };
 
 export const extensions = {
-  all: [] as Array<{ id: string; isActive?: boolean }>,
+  all: [] as Array<{ id: string; isActive?: boolean; packageJSON?: unknown }>,
   getExtension(id: string) {
     return extensions.all.find((e) => e.id.toLowerCase() === id.toLowerCase());
   },
@@ -597,7 +609,7 @@ export const driver = {
           secretStore.set(k, v);
         },
       },
-      extension: { packageJSON: { version: '0.3.4' } },
+      extension: { packageJSON: { version: '0.3.5' } },
     };
   },
 

@@ -47,6 +47,8 @@ export interface EditEvent {
   flags: number;
   /** For an internal copy: a live file that already contained the pasted text. */
   copiedFrom?: string;
+  /** A paste of text just cut or deleted: it kept its origins (a move). */
+  moved?: true;
 }
 
 export interface ReplayerOptions {
@@ -241,7 +243,9 @@ export class Replayer {
                 : 'typed';
           }
           const undoRedo = (flags & (Flag.UNDO | Flag.REDO)) !== 0;
+          const paste = (flags & Flag.PASTE) !== 0;
           for (const part of parts) {
+            let moved = false;
             // Undo and redo bring back text with the origin it had when it was removed.
             let pieces: Array<{ text: string; origin: Origin; seq: number }> = [
               { text: part.ins, origin, seq: rec.s },
@@ -251,6 +255,14 @@ export class Replayer {
               if (undoRedo && part.ins !== '') {
                 const restored = this.removed.get(file.f)?.restore(part.ins, origin, rec.s);
                 if (restored) pieces = restored;
+              } else if (paste && part.ins.trim() !== '') {
+                // Text cut (or deleted) and pasted back is a move: it keeps the origins it had,
+                // in this file or another recorded file (spec §7.1).
+                const restored = this.movedSpans(file.f, part.ins, source !== undefined);
+                if (restored) {
+                  pieces = restored;
+                  moved = true;
+                }
               }
               file.spans.remove(part.off, part.del);
               let at = part.off;
@@ -272,7 +284,8 @@ export class Replayer {
                   origin: piece.origin,
                   flags,
                 };
-                if (source !== undefined) event.copiedFrom = source;
+                if (source !== undefined && !moved) event.copiedFrom = source;
+                if (moved) event.moved = true;
                 this.onEdit!(event);
                 at += piece.text.length;
               });
@@ -375,6 +388,26 @@ export class Replayer {
       return false;
     }
     return true;
+  }
+
+  /**
+   * Origins of pasted text that was just removed: from this file (cut and pasted back), else
+   * from another recorded file, unless the text still exists in a live file (then it is a copy).
+   */
+  private movedSpans(
+    f: number,
+    text: string,
+    stillThere: boolean,
+  ): Array<{ text: string; origin: Origin; seq: number }> | undefined {
+    const own = this.removed.get(f)?.restoreExact(text);
+    if (own) return own;
+    if (stillThere) return undefined;
+    for (const [other, history] of this.removed) {
+      if (other === f) continue;
+      const found = history.restoreExact(text);
+      if (found) return found;
+    }
+    return undefined;
   }
 
   /** Remembers removed text with its origins, so a later undo or redo can restore them. */

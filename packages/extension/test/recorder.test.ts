@@ -619,7 +619,8 @@ describe('Recorder: timing, runs and housekeeping', () => {
     sim.recorder.onFocusChanged(true);
     await sim.recorder.addNote('Starter code from the course page.');
     sim.recorder.environmentChanged({ aiExt: ['github.copilot'] });
-    const report = await finish(sim);
+    // Copilot appears during the session: reported (0.3.5).
+    const report = await finish(sim, ['warn:AI_EXTENSION_ADDED']);
     expect(report.stats.runs).toBe(2);
     expect(report.notes.map((n) => n.text)).toEqual(['Starter code from the course page.']);
     expect(kinds(sim.bytes).filter((k) => k === 'FOCUS')).toHaveLength(2);

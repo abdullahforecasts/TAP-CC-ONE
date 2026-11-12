@@ -223,6 +223,8 @@ describe('recording through VS Code events', () => {
         (f.severity === 'warn' &&
           f.code !== 'NO_ANCHORS' &&
           f.code !== 'PAUSED_GAP_CHANGES' &&
+          // this test installs Copilot during the session, which is reported (0.3.5)
+          f.code !== 'AI_EXTENSION_ADDED' &&
           // these tests turn timestamping off, which the log discloses
           !(f.code === 'SETTINGS_WEAKENED' && f.message.includes('anchoring'))),
     );
@@ -643,7 +645,7 @@ describe('the bundled extension', () => {
   });
 });
 
-describe('0.3.3/0.3.4: modes, policy, outside files, open tabs, attachments and export checks', () => {
+describe('0.3.3-0.3.5: modes, extensions, policy, outside files, open tabs, attachments and export checks', () => {
   function records() {
     return readLog(logBytes()).records.map((r) => r.record);
   }
@@ -697,6 +699,77 @@ describe('0.3.3/0.3.4: modes, policy, outside files, open tabs, attachments and 
     const first = records().find((r) => r.k === Kind.SESSION_START)!;
     expect(first.k === Kind.SESSION_START && first.b.mode).toBe('exam');
     expect(verifyLog(logBytes()).findings.map((f) => f.code)).toContain('MODE_EXAM');
+  });
+
+  it('exam mode turns off AI and terminal extensions, asks to reload, and puts them back on stop (0.3.5)', async () => {
+    fake.extensions.all = [
+      { id: 'KiloCode.kilo-code', isActive: true },
+      { id: 'someone.portaterm', isActive: true, packageJSON: { displayName: 'Portaterm' } },
+      { id: 'ms-vscode.cpptools', isActive: true, packageJSON: { categories: ['Programming Languages'] } },
+    ];
+    driver.configuration.set('tap.defaultMode', 'exam');
+    driver.addFolder(ws);
+    await start();
+    await vscode.commands.executeCommand('tap.start');
+    await until(() => fs.existsSync(path.join(ws, '.tap', 'log.codelog')));
+    expect(driver.configuration.get('extensions.allowed')).toEqual({
+      '*': true,
+      'kilocode.kilo-code': false,
+      'someone.portaterm': false,
+    });
+    const first = records().find((r) => r.k === Kind.SESSION_START)!;
+    if (first.k !== Kind.SESSION_START) throw new Error('no session');
+    expect(first.b.blocked).toEqual(['kilocode.kilo-code', 'someone.portaterm']);
+    expect(first.b.termExt).toEqual(['someone.portaterm']);
+    expect(first.b.ai?.on).toBe(true); // Kilo Code still runs until the window reloads
+    expect(driver.configuration.get('files.exclude')).toEqual({ '**/.tap': true });
+    // The student is told, in the middle of the window, to reload.
+    await until(() => ui.messages.some((m) => m.modal && /Reload the window/.test(m.text)), 5000);
+    // Stopping puts the user setting back.
+    await vscode.commands.executeCommand('tap.stop');
+    expect(driver.configuration.get('extensions.allowed')).toBeUndefined();
+    const codes = verifyLog(logBytes()).findings.map((f) => f.code);
+    expect(codes).toContain('EXTENSIONS_BLOCKED');
+    expect(codes).toContain('TERMINAL_EXTENSION');
+  });
+
+  it('an AI extension installed during an exam is recorded, turned off and reported in a dialog (0.3.5)', async () => {
+    driver.configuration.set('tap.defaultMode', 'exam');
+    driver.addFolder(ws);
+    await start();
+    await vscode.commands.executeCommand('tap.start');
+    await until(() => fs.existsSync(path.join(ws, '.tap', 'log.codelog')));
+    fake.extensions.all = [{ id: 'saoudrizwan.claude-dev', isActive: false }];
+    driver.emitters.extensions.fire();
+    await until(() =>
+      records().some((r) => r.k === Kind.ENV_CHANGE && r.b.blocked?.includes('saoudrizwan.claude-dev')),
+    );
+    expect(ui.messages.some((m) => m.modal && /installed or enabled while/.test(m.text))).toBe(true);
+    const codes = verifyLog(logBytes()).findings.map((f) => `${f.severity}:${f.code}`);
+    expect(codes).toContain('warn:AI_EXTENSION_ADDED');
+  });
+
+  it('a file written in .tap/ is recorded as not recorded, and the student can move it (0.3.5)', async () => {
+    driver.addFolder(ws);
+    await start();
+    await vscode.commands.executeCommand('tap.start');
+    await until(() => fs.existsSync(path.join(ws, '.tap', 'log.codelog')));
+    const stray = path.join(ws, '.tap', 'lab.cpp');
+    fs.writeFileSync(stray, 'int main() { return 0; }\n');
+    ui.answers.push('Move it into the folder');
+    for (const w of driver.watchers) w.create.fire(fake.Uri.file(stray));
+    await until(() =>
+      records().some(
+        (r) => r.k === Kind.ENV_CHANGE && r.b.assets?.some((a) => a.p === '.tap/lab.cpp' && a.skipped),
+      ),
+    );
+    await until(() => fs.existsSync(path.join(ws, 'lab.cpp')));
+    expect(fs.existsSync(stray)).toBe(false);
+    const msg = ui.messages.find((m) => /\.tap\/lab\.cpp/.test(m.text))!;
+    expect(msg.modal).toBe(true);
+    const finding = verifyLog(logBytes()).findings.find((f) => f.code === 'UNRECORDED_CODE_FILE')!;
+    expect(finding.severity).toBe('warn');
+    expect(finding.message).toMatch(/TAP's own folder/);
   });
 
   it('records images and PDFs in the folder, when they are shown, and ships them in the export', async () => {
@@ -795,7 +868,13 @@ describe('0.3.3/0.3.4: modes, policy, outside files, open tabs, attachments and 
     driver.emitters.activeEditor.fire(fake.window.activeTextEditor);
     const outside = ui.statusItems.find((i) => i.name === 'TAP-CC-ONE: file not recorded')!;
     expect(outside.visible).toBe(true);
+    // Typing in it shows a dialog in the middle of the window, once per file (0.3.5).
+    driver.type(doc, 'int y;');
     expect(ui.messages.at(-1)!.text).toMatch(/"answer\.c" is outside the recorded folder/);
+    expect(ui.messages.at(-1)!.modal).toBe(true);
+    const count = ui.messages.length;
+    driver.type(doc, 'int z;');
+    expect(ui.messages.length).toBe(count);
     fake.window.activeTextEditor = { document: driver.open(path.join(ws, 'main.c')) };
     driver.emitters.activeEditor.fire(fake.window.activeTextEditor);
     expect(outside.visible).toBe(false);

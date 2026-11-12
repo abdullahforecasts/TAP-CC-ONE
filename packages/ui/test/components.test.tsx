@@ -64,7 +64,8 @@ describe('viewer components', () => {
       'check warn',
       'check pass',
       'check none',
-      'check none',
+      // Copilot was installed between the sessions (AI_EXTENSION_ADDED, 0.3.5).
+      'check warn',
     ]);
     const entries = root.querySelectorAll('[data-testid="history-entry"]');
     expect(entries).toHaveLength(4);

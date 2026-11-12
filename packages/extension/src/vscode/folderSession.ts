@@ -22,7 +22,6 @@ import type { AnchorService, AnchorSink } from '../anchoring/anchorService.js';
 import type { EditReason } from '../recorder/classify.js';
 import {
   AI_OFF_SETTINGS,
-  detectAiExtensions,
   LIVE_SHARE_ID,
   normaliseAppName,
   SUGGESTIONS_OFF_SETTINGS,
@@ -36,7 +35,7 @@ import {
   type RecorderState,
 } from '../recorder/recorder.js';
 import { cleanTerminalOutput, maskCommand, programName } from '../recorder/terminal.js';
-import { ASSET_SCAN_MAX, describeAsset, sameAsset, scanAssets } from '../storage/assets.js';
+import { ASSET_SCAN_MAX, describeAsset, isTapOwnFile, sameAsset, scanAssets } from '../storage/assets.js';
 import { readTrackedFile } from '../storage/diskReader.js';
 import {
   createMatcher,
@@ -49,7 +48,7 @@ import {
 import { FolderLock, LOCK_HEARTBEAT_MS } from '../storage/lock.js';
 import { type OpenedLog, openLog } from '../storage/logStore.js';
 import { walkFiles } from '../storage/walk.js';
-import { currentAiState, editorSettings, userCustomizations } from './editorEnv.js';
+import { currentAiState, editorSettings, installedExtensions, userCustomizations } from './editorEnv.js';
 import { currentOpenItems } from './openItems.js';
 
 export type SessionStatus = RecorderState | 'read-only' | 'error';
@@ -69,6 +68,10 @@ export interface SessionContext {
   rememberWrite?: (write: SettingWrite) => void;
   /** Returns and forgets the settings TAP changed. */
   takeWrites?: () => SettingWrite[];
+  /** AI or terminal extensions were installed or enabled while recording (0.3.5). */
+  onToolsAdded?: (session: FolderSession, ids: string[]) => void;
+  /** A file appeared in .tap/ or in build output, where TAP does not record (0.3.5). */
+  onStrayFile?: (session: FolderSession, rel: string) => void;
 }
 
 const TICK_MS = 15_000;
@@ -79,6 +82,8 @@ const MAX_RAW_OUTPUT = 512 * 1024;
 const SHELL_INTEGRATION_WAIT_MS = 5_000;
 /** Debounce for the list of things open outside the folder. */
 const OPEN_DEBOUNCE_MS = 1_000;
+/** This extension's id (never turned off by exam mode). */
+const TAP_EXTENSION_ID = 'abdullahforecasts.tap-cc-one';
 /** Wait before recording a change to an image, PDF... (they are often written in several steps). */
 const ASSET_DEBOUNCE_MS = 1_500;
 
@@ -140,6 +145,8 @@ export class FolderSession implements vscode.Disposable {
   private problem: string | undefined;
   private readonly runs = new Map<unknown, number>();
   private lastEnv = '';
+  /** AI and terminal extensions seen last (to notice new ones). */
+  private lastEnvTools = new Set<string>();
   private focused: boolean;
   private anchorSink: AnchorSink | undefined;
   /** Newest checkpoint already sent for timestamping. */
@@ -150,6 +157,8 @@ export class FolderSession implements vscode.Disposable {
   /** Files that are not recorded as text, as last recorded (0.3.4). */
   private readonly assets = new Map<string, Asset>();
   private readonly assetTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Extensions exam mode turned off in this session (0.3.5). */
+  private readonly blocked = new Set<string>();
   private lastAi = '';
   private lastOpen = '[]';
   private lastEditor = '';
@@ -204,6 +213,7 @@ export class FolderSession implements vscode.Disposable {
       if (options.mode) this.modeValue = options.mode;
       this.policy = this.effectivePolicy();
       await this.applyPolicy();
+      const blocked = await this.blockExtensions();
 
       this.lock = new FolderLock(path.join(this.tapDir, 'lock'), this.ctx.sessionId);
       const lockResult = this.lock.acquire();
@@ -235,7 +245,8 @@ export class FolderSession implements vscode.Disposable {
         checkpointIntervalMs: Number(tap['tap.checkpoint.intervalSec']) * 1000,
       };
       const env = this.environment();
-      this.lastEnv = JSON.stringify([env.aiExt, env.liveShare]);
+      this.lastEnv = JSON.stringify([env.aiExt, env.termExt, env.exts, env.liveShare]);
+      this.lastEnvTools = new Set([...env.aiExt, ...env.termExt]);
       const ai = currentAiState(this.folder.uri);
       this.lastAi = JSON.stringify(ai);
       const editor = this.editorEnvironment();
@@ -250,6 +261,7 @@ export class FolderSession implements vscode.Disposable {
         this.ctx.log.warn(`${this.name}: could not list the folder's other files: ${String(e)}`);
       }
       for (const a of assets) this.assets.set(a.p, a);
+      const strays = assets.filter((a) => a.skipped);
       const options2: RecorderOptions = {
         writer: this.opened.writer,
         sink: this.opened.store,
@@ -264,6 +276,7 @@ export class FolderSession implements vscode.Disposable {
           ...(options.aiChoice ? { aiChoice: options.aiChoice } : {}),
           mode: this.mode,
           ...(assets.length > 0 ? { assets } : {}),
+          ...(blocked.length > 0 ? { blocked } : {}),
           ...(policy
             ? {
                 policy: {
@@ -271,6 +284,8 @@ export class FolderSession implements vscode.Disposable {
                   suggestions: policy.suggestions,
                   lockSettings: policy.lockSettings,
                   requireShellIntegration: policy.requireShellIntegration,
+                  ...(policy.extensions ? { extensions: policy.extensions } : {}),
+                  ...(policy.allowExtensions ? { allowExtensions: policy.allowExtensions.join(',') } : {}),
                 },
               }
             : {}),
@@ -296,6 +311,7 @@ export class FolderSession implements vscode.Disposable {
       for (const t of vscode.window.terminals) this.watchShellIntegration(t);
       this.scheduleOpenItems(0);
       this.startAnchoring();
+      for (const a of strays.slice(0, 3)) this.ctx.onStrayFile?.(this, a.p);
       this.ctx.log.info(`${this.name}: recording to ${this.logPath}`);
     } catch (e) {
       this.fail(e);
@@ -499,6 +515,14 @@ export class FolderSession implements vscode.Disposable {
     if (this.policy.requireShellIntegration) {
       changes.push(['terminal.integrated', 'shellIntegration.enabled', true]);
     }
+    if (this.policy.ai === 'off') {
+      // Hide TAP's own folder in the Explorer so it is not used as a scratch folder (0.3.5).
+      const own = vscode.workspace
+        .getConfiguration('files', this.folder.uri)
+        .inspect<Record<string, boolean>>('exclude');
+      const current = own?.workspaceFolderValue ?? own?.workspaceValue ?? {};
+      if (current['**/.tap'] !== true) changes.push(['files', 'exclude', { ...current, '**/.tap': true }]);
+    }
     await this.writeFolderSettings(changes);
   }
 
@@ -579,6 +603,57 @@ export class FolderSession implements vscode.Disposable {
     this.checkAi();
   }
 
+  /**
+   * With AI off (exam mode or the teacher's policy), turns off AI and terminal extensions through
+   * VS Code's `extensions.allowed` user setting (VS Code 1.96+): AI chat settings do not reach
+   * third-party assistants, and a terminal of an extension's own is not recorded (0.3.5). The
+   * teacher's policy can ask for an allowlist instead. The previous value is put back when
+   * recording stops or in practice mode. Returns the extensions turned off.
+   */
+  async blockExtensions(): Promise<string[]> {
+    if (this.policy.ai !== 'off') return [];
+    const allow = new Set([TAP_EXTENSION_ID, ...(this.policy.allowExtensions ?? [])]);
+    const strict = this.policy.extensions === 'allowlist';
+    const ids = installedExtensions()
+      .filter((e) => !allow.has(e.id) && (strict || e.kind === 'ai' || e.kind === 'terminal'))
+      .map((e) => e.id);
+    if (ids.length === 0) return [...this.blocked];
+    const c = vscode.workspace.getConfiguration('extensions');
+    const before = c.inspect<Record<string, unknown>>('allowed')?.globalValue;
+    const next: Record<string, unknown> =
+      before && typeof before === 'object' && !Array.isArray(before) ? { ...before } : { '*': true };
+    let changed = false;
+    for (const id of ids) {
+      if (next[id] !== false) {
+        next[id] = false;
+        changed = true;
+      }
+    }
+    if (changed) {
+      try {
+        await c.update('allowed', next, vscode.ConfigurationTarget.Global);
+        this.ctx.rememberWrite?.({
+          section: 'extensions',
+          key: 'allowed',
+          target: vscode.ConfigurationTarget.Global,
+          before,
+        });
+      } catch (e) {
+        this.ctx.log.warn(`${this.name}: could not turn off ${ids.join(', ')}: ${String(e)}`);
+        return [...this.blocked];
+      }
+    }
+    for (const id of ids) this.blocked.add(id);
+    if (this.recorder) this.recorder.environmentChanged({ blocked: [...this.blocked].sort() });
+    return [...this.blocked].sort();
+  }
+
+  /** Extensions exam mode turned off that are still running (they stop after a window reload). */
+  blockedStillRunning(): string[] {
+    const running = new Set(vscode.extensions.all.map((e) => e.id.toLowerCase()));
+    return [...this.blocked].filter((id) => running.has(id));
+  }
+
   /** Whether AI features are still available right now (after exam mode tried to turn them off). */
   aiStillOn(): boolean {
     return currentAiState(this.folder.uri).on;
@@ -592,8 +667,16 @@ export class FolderSession implements vscode.Disposable {
     if (this.modeLocked || mode === this.modeValue) return false;
     this.modeValue = mode;
     this.policy = this.effectivePolicy();
-    if (mode === 'exam') await this.applyPolicy();
-    else await this.restoreSettings();
+    if (mode === 'exam') {
+      await this.applyPolicy();
+      await this.blockExtensions();
+    } else {
+      await this.restoreSettings();
+      if (this.blocked.size > 0) {
+        this.blocked.clear();
+        this.recorder?.environmentChanged({ blocked: [] });
+      }
+    }
     this.recorder?.environmentChanged({ mode, aiChoice: mode === 'exam' ? 'off' : 'on' });
     this.checkAi();
     const tap = this.tapSettings();
@@ -629,9 +712,31 @@ export class FolderSession implements vscode.Disposable {
           if (!known && this.assets.size >= ASSET_SCAN_MAX) return;
           this.assets.set(rel, now);
           this.recorder.environmentChanged({ assets: [{ ...now, op: known ? 'change' : 'add' }] });
+          if (!known && now.skipped) this.ctx.onStrayFile?.(this, rel);
         }
       }, ASSET_DEBOUNCE_MS),
     );
+  }
+
+  /**
+   * Moves a stray file (in .tap/ or build output) to the top of the folder, where it is recorded.
+   * Returns its new folder-relative path, or undefined when it could not be moved.
+   */
+  moveIntoFolder(rel: string): string | undefined {
+    const from = path.join(this.root, ...rel.split('/'));
+    const base = path.basename(from);
+    const ext = path.extname(base);
+    const stem = base.slice(0, base.length - ext.length);
+    let name = base;
+    for (let i = 1; fs.existsSync(path.join(this.root, name)) && i < 100; i++) name = `${stem}-${i}${ext}`;
+    try {
+      fs.renameSync(from, path.join(this.root, name));
+    } catch (e) {
+      this.ctx.log.warn(`${this.name}: could not move ${rel}: ${String(e)}`);
+      return undefined;
+    }
+    this.scheduleAsset(rel);
+    return name;
   }
 
   /** Files that are not recorded as text, present now (for the export). */
@@ -715,6 +820,9 @@ export class FolderSession implements vscode.Disposable {
             return { rel };
           },
           (terminal) => this.shellIntegration.get(terminal),
+          installedExtensions()
+            .filter((e) => e.kind === 'ai')
+            .flatMap((e) => e.names),
         );
       } catch (e) {
         this.ctx.log.warn(`${this.name}: could not list open tabs: ${String(e)}`);
@@ -736,13 +844,15 @@ export class FolderSession implements vscode.Disposable {
 
   /** Editor and environment details disclosed in SESSION_START (design §6.1). */
   environment() {
-    const ids = vscode.extensions.all.map((e) => e.id);
+    const installed = installedExtensions();
     return {
       vsc: vscode.version,
       app: normaliseAppName(vscode.env.appName),
       os: process.platform,
       ext: this.ctx.extensionVersion,
-      aiExt: detectAiExtensions(ids),
+      aiExt: installed.filter((e) => e.kind === 'ai').map((e) => e.id),
+      termExt: installed.filter((e) => e.kind === 'terminal').map((e) => e.id),
+      exts: installed.map((e) => e.id).slice(0, 300),
       liveShare: vscode.extensions.getExtension(LIVE_SHARE_ID) !== undefined,
     };
   }
@@ -1001,10 +1111,19 @@ export class FolderSession implements vscode.Disposable {
       vscode.extensions.onDidChange(() => {
         this.checkAi();
         const env = this.environment();
-        const key = JSON.stringify([env.aiExt, env.liveShare]);
+        const key = JSON.stringify([env.aiExt, env.termExt, env.exts, env.liveShare]);
         if (key === this.lastEnv) return;
+        const before = this.lastEnvTools;
         this.lastEnv = key;
-        r()?.environmentChanged({ aiExt: env.aiExt, liveShare: env.liveShare });
+        this.lastEnvTools = new Set([...env.aiExt, ...env.termExt]);
+        r()?.environmentChanged({
+          aiExt: env.aiExt,
+          termExt: env.termExt,
+          exts: env.exts,
+          liveShare: env.liveShare,
+        });
+        const added = [...this.lastEnvTools].filter((id) => !before.has(id));
+        if (added.length > 0) this.ctx.onToolsAdded?.(this, added);
       }),
       vscode.workspace.onDidChangeConfiguration((e) => this.onConfigurationChanged(e)),
       vscode.window.tabGroups.onDidChangeTabs(() => this.scheduleOpenItems()),
@@ -1014,8 +1133,12 @@ export class FolderSession implements vscode.Disposable {
     const onDisk = (uri: vscode.Uri) => {
       const rel = this.relOf(uri);
       debug('disk event', uri.fsPath, rel);
-      if (rel && !rel.startsWith(`${TAP_DIR}/`)) {
+      if (!rel) return;
+      if (!rel.startsWith(`${TAP_DIR}/`)) {
         r()?.onDiskEvent(rel);
+        this.scheduleAsset(rel);
+      } else if (!isTapOwnFile(rel)) {
+        // Something other than TAP's own files in .tap/: not recorded, so say so (0.3.5).
         this.scheduleAsset(rel);
       }
     };
